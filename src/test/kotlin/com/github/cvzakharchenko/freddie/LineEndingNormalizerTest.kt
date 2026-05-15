@@ -1,7 +1,7 @@
 package com.github.cvzakharchenko.freddie
 
 import com.github.cvzakharchenko.freddie.context.LineEndingNormalizer
-import com.github.cvzakharchenko.freddie.presentation.ChangedSlice
+import com.github.cvzakharchenko.freddie.presentation.ChangedBlock
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -19,12 +19,10 @@ class LineEndingNormalizerTest {
                 "};\n" +
                 "struct AuthResponse"
 
-        val slice = ChangedSlice.betweenIgnoringLineEndings(original, mercuryReplacement)
+        val block = requireNotNull(ChangedBlock.between(original, mercuryReplacement))
 
-        assertEquals("", slice.originalChange)
-        assertEquals("ned", slice.replacementChange)
-        assertEquals("\tErrorUserBan".length, slice.originalStartOffset)
-        assertEquals("\tErrorUserBan".length, slice.originalEndOffset)
+        assertEquals(0, block.anchorOffsetInOriginal)
+        assertEquals("\tErrorUserBanned,", block.replacementBlock.substringBefore('\n'))
     }
 
     @Test
@@ -57,5 +55,17 @@ class LineEndingNormalizerTest {
             )
 
         assertEquals("one\r\ntwo\r\n", prepared.applicationText)
+    }
+
+    @Test
+    fun `prepared replacement removes boundary leading blank line when it realigns with original`() {
+        val prepared =
+            LineEndingNormalizer.prepareReplacementForEditableRegion(
+                mercuryReplacement = "\none\ninserted\ntwo\n",
+                originalEditableRegion = "one\ntwo\n",
+                documentText = "one\ntwo\n",
+            )
+
+        assertEquals("one\ninserted\ntwo\n", prepared.applicationText)
     }
 }

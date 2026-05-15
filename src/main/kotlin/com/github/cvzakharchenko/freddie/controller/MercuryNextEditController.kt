@@ -11,7 +11,7 @@ import com.github.cvzakharchenko.freddie.debug.FreddieDebugStateService
 import com.github.cvzakharchenko.freddie.mercury.MercuryApiException
 import com.github.cvzakharchenko.freddie.mercury.MercuryClient
 import com.github.cvzakharchenko.freddie.mercury.MercuryCompletion
-import com.github.cvzakharchenko.freddie.presentation.InlineDiffPreviewPresenter
+import com.github.cvzakharchenko.freddie.presentation.LineGhostTextPresenter
 import com.github.cvzakharchenko.freddie.presentation.MercurySuggestion
 import com.github.cvzakharchenko.freddie.presentation.PresentedSuggestion
 import com.github.cvzakharchenko.freddie.settings.FreddieSettings
@@ -73,7 +73,7 @@ class MercuryNextEditController(
     private val contextCollector = MercuryContextCollector(project, recentEditHistory, recentlyViewedSnippetTracker)
     private val triggerPolicy = MercuryTriggerPolicy(project)
     private val debugState = project.service<FreddieDebugStateService>()
-    private val presenter = InlineDiffPreviewPresenter()
+    private val presenter = LineGhostTextPresenter()
     private val mercuryClient = MercuryClient()
     private val typedRequestAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val requestSerial = AtomicLong()
@@ -195,6 +195,7 @@ class MercuryNextEditController(
         resolvedRegion.note?.let { debugState.recordEvent("Accepting relocated suggestion: $it") }
 
         val beforeText = suggestion.document.text
+        val originalCaretOffsetInRegion = suggestion.caretOffset - suggestion.startOffset
         suppressDocumentTriggers = true
         try {
             WriteCommandAction.runWriteCommandAction(
@@ -207,7 +208,14 @@ class MercuryNextEditController(
                         resolvedRegion.endOffset,
                         suggestion.replacementText,
                     )
-                    val newCaretOffset = (resolvedRegion.startOffset + suggestion.replacementText.length)
+                    val newCaretOffset = (
+                        resolvedRegion.startOffset +
+                            SuggestionCaretMapper.mapCaretOffset(
+                                originalText = suggestion.originalText,
+                                replacementText = suggestion.replacementText,
+                                caretOffsetInOriginal = originalCaretOffsetInRegion,
+                            )
+                    )
                         .coerceIn(0, suggestion.document.textLength)
                     suggestion.editor.caretModel.moveToOffset(newCaretOffset)
                 },
@@ -339,6 +347,9 @@ class MercuryNextEditController(
         if (preparedReplacement.changedLineEndings) {
             debugState.recordEvent("Normalized Mercury replacement line endings to ${describeLineSeparator(preparedReplacement.targetLineSeparator)}")
         }
+        if (preparedReplacement.changedLeadingLineEnding) {
+            debugState.recordEvent("Removed leading blank line from Mercury replacement to align with the editable region")
+        }
         if (preparedReplacement.changedTrailingLineEnding) {
             debugState.recordEvent("Adjusted Mercury replacement trailing line ending to match the editable region")
         }
@@ -371,9 +382,9 @@ class MercuryNextEditController(
         debugState.recordSuggestionResult(
             message =
                 if (currentPresentedSuggestion == null) {
-                    "Preview was not rendered because the diff was empty"
+                    "Preview was not rendered because the changed block was empty"
                 } else {
-                    "Inline diff preview is visible"
+                    "Suggestion ghost text is visible"
                 },
             visibleSuggestion = currentPresentedSuggestion != null,
         )

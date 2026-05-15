@@ -27,6 +27,7 @@ data class FreddieDebugSnapshot(
     val lastEvent: String = "No activity yet.",
     val context: MercuryContextDebugInfo? = null,
     val lastPrompt: String = "",
+    val lastCodeToEdit: String = "",
     val lastResponseSummary: String = "No response yet.",
     val lastResponseText: String = "",
     val lastRawResponseBody: String = "",
@@ -123,6 +124,7 @@ class FreddieDebugStateService(
                 lastDecision = "Request #$requestNumber sent to Mercury",
                 context = requestSnapshot.debugInfo,
                 lastPrompt = requestSnapshot.prompt,
+                lastCodeToEdit = requestSnapshot.debugInfo.codeToEditBlock,
                 lastError = "",
             )
         }

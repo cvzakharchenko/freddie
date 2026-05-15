@@ -50,6 +50,7 @@ private class FreddieDebugPanel(
     private val suggestionLabel = JBLabel()
     private val eventLabel = JBLabel()
     private val contextArea = debugTextArea()
+    private val codeToEditArea = debugTextArea()
     private val promptArea = debugTextArea()
     private val responseArea = debugTextArea()
     private val eventsArea = debugTextArea()
@@ -80,10 +81,11 @@ private class FreddieDebugPanel(
         suggestionLabel.text = "Suggestion visible: ${snapshot.visibleSuggestion}"
         eventLabel.text = "Last event: ${snapshot.lastEvent}    Updated: ${formatTime(snapshot.updatedAtMillis)}"
         contextArea.text = formatContext(snapshot.context)
+        codeToEditArea.text = snapshot.lastCodeToEdit.ifBlank { "No code_to_edit block captured yet." }
         promptArea.text = snapshot.lastPrompt.ifBlank { "No prompt captured yet." }
         responseArea.text = formatResponse(snapshot)
         eventsArea.text = snapshot.events.joinToString("\n").ifBlank { "No activity yet." }
-        listOf(contextArea, promptArea, responseArea, eventsArea).forEach { it.caretPosition = 0 }
+        listOf(contextArea, codeToEditArea, promptArea, responseArea, eventsArea).forEach { it.caretPosition = 0 }
     }
 
     private fun buildSummaryPanel(): JComponent =
@@ -125,6 +127,7 @@ private class FreddieDebugPanel(
     private fun buildTabs(): JComponent =
         JTabbedPane().apply {
             addTab("Context", JBScrollPane(contextArea))
+            addTab("code_to_edit", JBScrollPane(codeToEditArea))
             addTab("Prompt", JBScrollPane(promptArea))
             addTab("Response", JBScrollPane(responseArea))
             addTab("Events", JBScrollPane(eventsArea))

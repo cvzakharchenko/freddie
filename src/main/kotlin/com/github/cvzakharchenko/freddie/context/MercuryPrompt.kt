@@ -44,6 +44,7 @@ data class MercuryContextDebugInfo(
     val snippets: List<MercurySnippetDebugInfo>,
     val editDiffCount: Int,
     val promptCharCount: Int,
+    val codeToEditBlock: String,
 )
 
 data class MercurySnippetDebugInfo(
@@ -119,6 +120,7 @@ class MercuryContextCollector(
                         },
                     editDiffCount = editDiffs.size,
                     promptCharCount = prompt.length,
+                    codeToEditBlock = editableRegion.beforeCursor + "<|cursor|>" + editableRegion.afterCursor,
                 ),
         )
     }

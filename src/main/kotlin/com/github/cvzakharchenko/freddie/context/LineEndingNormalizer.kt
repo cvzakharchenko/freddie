@@ -4,6 +4,7 @@ object LineEndingNormalizer {
     data class PreparedReplacement(
         val applicationText: String,
         val changedLineEndings: Boolean,
+        val changedLeadingLineEnding: Boolean,
         val changedTrailingLineEnding: Boolean,
         val targetLineSeparator: String,
     )
@@ -23,14 +24,16 @@ object LineEndingNormalizer {
     ): PreparedReplacement {
         val normalizedOriginal = normalizeToLf(originalEditableRegion)
         val normalizedReplacement = normalizeToLf(mercuryReplacement)
-        val trailingAlignedReplacement = alignTrailingLineEndingPresence(normalizedReplacement, normalizedOriginal)
+        val leadingAlignedReplacement = alignLeadingLineEndingPresence(normalizedReplacement, normalizedOriginal)
+        val trailingAlignedReplacement = alignTrailingLineEndingPresence(leadingAlignedReplacement, normalizedOriginal)
         val targetLineSeparator = dominantLineSeparator(documentText) ?: "\n"
         val applicationText = convertLfToLineSeparator(trailingAlignedReplacement, targetLineSeparator)
 
         return PreparedReplacement(
             applicationText = applicationText,
             changedLineEndings = mercuryReplacement != normalizeLike(mercuryReplacement, documentText),
-            changedTrailingLineEnding = trailingAlignedReplacement != normalizedReplacement,
+            changedLeadingLineEnding = leadingAlignedReplacement != normalizedReplacement,
+            changedTrailingLineEnding = trailingAlignedReplacement != leadingAlignedReplacement,
             targetLineSeparator = targetLineSeparator,
         )
     }
@@ -126,6 +129,20 @@ object LineEndingNormalizer {
             !originalEndsWithLineEnding && replacementEndsWithLineEnding -> replacement.dropLast(1)
             else -> replacement
         }
+    }
+
+    private fun alignLeadingLineEndingPresence(
+        replacement: String,
+        original: String,
+    ): String {
+        if (original.startsWith("\n") || !replacement.startsWith("\n")) return replacement
+
+        val withoutLeadingBlank = replacement.dropWhile { it == '\n' }
+        if (withoutLeadingBlank.isEmpty()) return replacement
+
+        val originalFirstLine = original.substringBefore('\n')
+        if (originalFirstLine.isEmpty()) return replacement
+        return if (withoutLeadingBlank.startsWith(originalFirstLine)) withoutLeadingBlank else replacement
     }
 
     private val LINE_ENDING_PATTERN = Regex("\\r\\n|\\r|\\n")
