@@ -45,13 +45,13 @@ private class InlineDiffPreview(
     companion object {
         fun create(suggestion: MercurySuggestion): InlineDiffPreview? {
             val editor = suggestion.editor
-            val slice = ChangedSlice.between(suggestion.originalText, suggestion.replacementText)
-            if (slice.originalChange.isEmpty() && slice.replacementChange.isEmpty()) return null
+            val slice = ChangedSlice.betweenIgnoringLineEndings(suggestion.originalText, suggestion.replacementText)
+            if (slice.isEmpty) return null
 
             val highlighters = mutableListOf<RangeHighlighter>()
             val inlays = mutableListOf<Inlay<*>>()
-            val changeStartOffset = suggestion.startOffset + slice.prefixLength
-            val changeEndOffset = suggestion.endOffset - slice.suffixLength
+            val changeStartOffset = suggestion.startOffset + slice.originalStartOffset
+            val changeEndOffset = suggestion.startOffset + slice.originalEndOffset
 
             if (changeStartOffset < changeEndOffset) {
                 highlighters.add(
@@ -97,42 +97,6 @@ private class InlineDiffPreview(
                 effectColor = JBColor(Color(0xB3261E), Color(0xFFB4AB))
                 effectType = EffectType.STRIKEOUT
             }
-    }
-}
-
-private data class ChangedSlice(
-    val prefixLength: Int,
-    val suffixLength: Int,
-    val originalChange: String,
-    val replacementChange: String,
-) {
-    companion object {
-        fun between(
-            original: String,
-            replacement: String,
-        ): ChangedSlice {
-            var prefix = 0
-            val maxPrefix = minOf(original.length, replacement.length)
-            while (prefix < maxPrefix && original[prefix] == replacement[prefix]) {
-                prefix++
-            }
-
-            var suffix = 0
-            while (
-                suffix < original.length - prefix &&
-                suffix < replacement.length - prefix &&
-                original[original.lastIndex - suffix] == replacement[replacement.lastIndex - suffix]
-            ) {
-                suffix++
-            }
-
-            return ChangedSlice(
-                prefixLength = prefix,
-                suffixLength = suffix,
-                originalChange = original.substring(prefix, original.length - suffix),
-                replacementChange = replacement.substring(prefix, replacement.length - suffix),
-            )
-        }
     }
 }
 

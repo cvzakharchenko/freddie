@@ -1,0 +1,132 @@
+package com.github.cvzakharchenko.freddie.context
+
+object LineEndingNormalizer {
+    data class PreparedReplacement(
+        val applicationText: String,
+        val changedLineEndings: Boolean,
+        val changedTrailingLineEnding: Boolean,
+        val targetLineSeparator: String,
+    )
+
+    data class NormalizedText(
+        val text: String,
+        val sourceOffsetByNormalizedOffset: IntArray,
+    ) {
+        fun sourceOffset(normalizedOffset: Int): Int =
+            sourceOffsetByNormalizedOffset[normalizedOffset.coerceIn(sourceOffsetByNormalizedOffset.indices)]
+    }
+
+    fun prepareReplacementForEditableRegion(
+        mercuryReplacement: String,
+        originalEditableRegion: String,
+        documentText: String,
+    ): PreparedReplacement {
+        val normalizedOriginal = normalizeToLf(originalEditableRegion)
+        val normalizedReplacement = normalizeToLf(mercuryReplacement)
+        val trailingAlignedReplacement = alignTrailingLineEndingPresence(normalizedReplacement, normalizedOriginal)
+        val targetLineSeparator = dominantLineSeparator(documentText) ?: "\n"
+        val applicationText = convertLfToLineSeparator(trailingAlignedReplacement, targetLineSeparator)
+
+        return PreparedReplacement(
+            applicationText = applicationText,
+            changedLineEndings = mercuryReplacement != normalizeLike(mercuryReplacement, documentText),
+            changedTrailingLineEnding = trailingAlignedReplacement != normalizedReplacement,
+            targetLineSeparator = targetLineSeparator,
+        )
+    }
+
+    fun normalizeLike(
+        text: String,
+        referenceText: String,
+    ): String {
+        val separator = dominantLineSeparator(referenceText) ?: return text
+        return text.replace(LINE_ENDING_PATTERN, separator)
+    }
+
+    fun normalizeToLf(text: String): String = text.replace(LINE_ENDING_PATTERN, "\n")
+
+    fun normalizeToLfWithSourceOffsets(text: String): NormalizedText {
+        val normalized = StringBuilder(text.length)
+        val sourceOffsets = ArrayList<Int>(text.length + 1)
+        sourceOffsets.add(0)
+
+        var index = 0
+        while (index < text.length) {
+            when (text[index]) {
+                '\r' -> {
+                    if (index + 1 < text.length && text[index + 1] == '\n') {
+                        normalized.append('\n')
+                        index += 2
+                    } else {
+                        normalized.append('\n')
+                        index++
+                    }
+                }
+                else -> {
+                    normalized.append(text[index])
+                    index++
+                }
+            }
+            sourceOffsets.add(index)
+        }
+
+        return NormalizedText(
+            text = normalized.toString(),
+            sourceOffsetByNormalizedOffset = sourceOffsets.toIntArray(),
+        )
+    }
+
+    fun dominantLineSeparator(text: String): String? {
+        var crlf = 0
+        var lf = 0
+        var cr = 0
+        var index = 0
+        while (index < text.length) {
+            when (text[index]) {
+                '\r' -> {
+                    if (index + 1 < text.length && text[index + 1] == '\n') {
+                        crlf++
+                        index += 2
+                    } else {
+                        cr++
+                        index++
+                    }
+                }
+                '\n' -> {
+                    lf++
+                    index++
+                }
+                else -> index++
+            }
+        }
+
+        val max = maxOf(crlf, lf, cr)
+        if (max == 0) return null
+        return when (max) {
+            crlf -> "\r\n"
+            lf -> "\n"
+            else -> "\r"
+        }
+    }
+
+    fun convertLfToLineSeparator(
+        text: String,
+        lineSeparator: String,
+    ): String =
+        if (lineSeparator == "\n") text else text.replace("\n", lineSeparator)
+
+    private fun alignTrailingLineEndingPresence(
+        replacement: String,
+        original: String,
+    ): String {
+        val originalEndsWithLineEnding = original.endsWith("\n")
+        val replacementEndsWithLineEnding = replacement.endsWith("\n")
+        return when {
+            originalEndsWithLineEnding && !replacementEndsWithLineEnding -> "$replacement\n"
+            !originalEndsWithLineEnding && replacementEndsWithLineEnding -> replacement.dropLast(1)
+            else -> replacement
+        }
+    }
+
+    private val LINE_ENDING_PATTERN = Regex("\\r\\n|\\r|\\n")
+}

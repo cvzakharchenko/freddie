@@ -1,5 +1,7 @@
 package com.github.cvzakharchenko.freddie.controller
 
+import com.github.cvzakharchenko.freddie.context.EditableRegionMatcher
+import com.github.cvzakharchenko.freddie.context.LineEndingNormalizer
 import com.github.cvzakharchenko.freddie.context.MercuryContextCollector
 import com.github.cvzakharchenko.freddie.context.MercuryRequestSnapshot
 import com.github.cvzakharchenko.freddie.context.RecentEditHistory
@@ -48,6 +50,17 @@ import java.util.concurrent.atomic.AtomicLong
 class MercuryNextEditController(
     private val project: Project,
 ) : Disposable {
+    private data class ResolvedSuggestionRegion(
+        val startOffset: Int,
+        val endOffset: Int,
+        val note: String?,
+    )
+
+    private data class RegionCheck(
+        val region: ResolvedSuggestionRegion? = null,
+        val discardReason: String? = null,
+    )
+
     private data class DocumentTracking(
         val document: Document,
         val disposable: Disposable,
@@ -171,13 +184,15 @@ class MercuryNextEditController(
     fun acceptCurrentSuggestion(): Boolean {
         val presented = currentPresentedSuggestion ?: return false
         val suggestion = presented.suggestion
-        val stalenessReason = suggestionStalenessReason(suggestion)
-        if (stalenessReason != null) {
+        val regionCheck = resolveSuggestionRegion(suggestion)
+        if (regionCheck.discardReason != null) {
             invalidatePendingRequests()
             clearVisibleSuggestion()
-            debugState.recordSuggestionResult("Suggestion was not accepted: $stalenessReason", visibleSuggestion = false)
+            debugState.recordSuggestionResult("Suggestion was not accepted: ${regionCheck.discardReason}", visibleSuggestion = false)
             return false
         }
+        val resolvedRegion = requireNotNull(regionCheck.region)
+        resolvedRegion.note?.let { debugState.recordEvent("Accepting relocated suggestion: $it") }
 
         val beforeText = suggestion.document.text
         suppressDocumentTriggers = true
@@ -188,11 +203,11 @@ class MercuryNextEditController(
                 null,
                 Runnable {
                     suggestion.document.replaceString(
-                        suggestion.startOffset,
-                        suggestion.endOffset,
+                        resolvedRegion.startOffset,
+                        resolvedRegion.endOffset,
                         suggestion.replacementText,
                     )
-                    val newCaretOffset = (suggestion.startOffset + suggestion.replacementText.length)
+                    val newCaretOffset = (resolvedRegion.startOffset + suggestion.replacementText.length)
                         .coerceIn(0, suggestion.document.textLength)
                     suggestion.editor.caretModel.moveToOffset(newCaretOffset)
                 },
@@ -309,21 +324,36 @@ class MercuryNextEditController(
         currentTask = null
         debugState.recordResponse(completion)
 
-        val replacementText = completion.replacementText
-        if (replacementText == null) {
+        val rawReplacementText = completion.replacementText
+        if (rawReplacementText == null) {
             debugState.recordSuggestionResult("Mercury returned None or no choice content", visibleSuggestion = false)
             return
+        }
+        val preparedReplacement =
+            LineEndingNormalizer.prepareReplacementForEditableRegion(
+                mercuryReplacement = rawReplacementText,
+                originalEditableRegion = snapshot.editableRegion.originalText,
+                documentText = snapshot.document.text,
+            )
+        val replacementText = preparedReplacement.applicationText
+        if (preparedReplacement.changedLineEndings) {
+            debugState.recordEvent("Normalized Mercury replacement line endings to ${describeLineSeparator(preparedReplacement.targetLineSeparator)}")
+        }
+        if (preparedReplacement.changedTrailingLineEnding) {
+            debugState.recordEvent("Adjusted Mercury replacement trailing line ending to match the editable region")
         }
         if (replacementText == snapshot.editableRegion.originalText) {
             debugState.recordSuggestionResult("Mercury replacement matched the editable region exactly", visibleSuggestion = false)
             return
         }
 
-        val stalenessReason = snapshotStalenessReason(snapshot)
-        if (stalenessReason != null) {
-            debugState.recordSuggestionResult("Mercury response discarded: $stalenessReason", visibleSuggestion = false)
+        val regionCheck = resolveSnapshotRegion(snapshot)
+        if (regionCheck.discardReason != null) {
+            debugState.recordSuggestionResult("Mercury response discarded: ${regionCheck.discardReason}", visibleSuggestion = false)
             return
         }
+        val resolvedRegion = requireNotNull(regionCheck.region)
+        resolvedRegion.note?.let { debugState.recordEvent("Using relocated editable region: $it") }
 
         val suggestion =
             MercurySuggestion(
@@ -332,8 +362,8 @@ class MercuryNextEditController(
                 filePath = snapshot.filePath,
                 modificationStamp = snapshot.modificationStamp,
                 caretOffset = snapshot.caretOffset,
-                startOffset = snapshot.editableRegion.startOffset,
-                endOffset = snapshot.editableRegion.endOffset,
+                startOffset = resolvedRegion.startOffset,
+                endOffset = resolvedRegion.endOffset,
                 originalText = snapshot.editableRegion.originalText,
                 replacementText = replacementText,
             )
@@ -371,37 +401,82 @@ class MercuryNextEditController(
     private fun shouldNotify(error: Throwable): Boolean =
         error !is MercuryApiException || error.shouldNotifyUser
 
-    private fun snapshotStalenessReason(snapshot: MercuryRequestSnapshot): String? {
+    private fun describeLineSeparator(lineSeparator: String): String =
+        when (lineSeparator) {
+            "\r\n" -> "CRLF"
+            "\n" -> "LF"
+            "\r" -> "CR"
+            else -> "the document line separator"
+        }
+
+    private fun resolveSnapshotRegion(snapshot: MercuryRequestSnapshot): RegionCheck {
         val selectedEditor = FileEditorManager.getInstance(project).selectedTextEditor
-        if (selectedEditor != snapshot.editor) return "selected editor changed"
-        if (snapshot.editor.isDisposed) return "editor was disposed"
-        if (snapshot.document.modificationStamp != snapshot.modificationStamp) return "document modification stamp changed"
-        if (snapshot.editor.caretModel.offset != snapshot.caretOffset) return "caret moved"
-        return documentRegionText(
-            snapshot.document,
-            snapshot.editableRegion.startOffset,
-            snapshot.editableRegion.endOffset,
+        if (selectedEditor != snapshot.editor) return RegionCheck(discardReason = "selected editor changed")
+        if (snapshot.editor.isDisposed) return RegionCheck(discardReason = "editor was disposed")
+        if (snapshot.document.modificationStamp != snapshot.modificationStamp) {
+            return RegionCheck(
+                discardReason =
+                    "document modification stamp changed: expected ${snapshot.modificationStamp}, " +
+                        "actual ${snapshot.document.modificationStamp}",
+            )
+        }
+        if (snapshot.editor.caretModel.offset != snapshot.caretOffset) {
+            return RegionCheck(discardReason = "caret moved: expected ${snapshot.caretOffset}, actual ${snapshot.editor.caretModel.offset}")
+        }
+        return resolveEditableRegion(
+            document = snapshot.document,
+            expectedStartOffset = snapshot.editableRegion.startOffset,
+            expectedEndOffset = snapshot.editableRegion.endOffset,
+            originalText = snapshot.editableRegion.originalText,
         )
-            ?.let { if (it == snapshot.editableRegion.originalText) null else "editable region text changed" }
-            ?: "editable region offsets are no longer valid"
     }
 
-    private fun suggestionStalenessReason(suggestion: MercurySuggestion): String? {
-        if (suggestion.editor.isDisposed) return "editor was disposed"
-        if (suggestion.document.modificationStamp != suggestion.modificationStamp) return "document modification stamp changed"
-        if (suggestion.editor.caretModel.offset != suggestion.caretOffset) return "caret moved"
-        return documentRegionText(suggestion.document, suggestion.startOffset, suggestion.endOffset)
-            ?.let { if (it == suggestion.originalText) null else "editable region text changed" }
-            ?: "editable region offsets are no longer valid"
+    private fun resolveSuggestionRegion(suggestion: MercurySuggestion): RegionCheck {
+        if (suggestion.editor.isDisposed) return RegionCheck(discardReason = "editor was disposed")
+        if (suggestion.document.modificationStamp != suggestion.modificationStamp) {
+            return RegionCheck(
+                discardReason =
+                    "document modification stamp changed: expected ${suggestion.modificationStamp}, " +
+                        "actual ${suggestion.document.modificationStamp}",
+            )
+        }
+        if (suggestion.editor.caretModel.offset != suggestion.caretOffset) {
+            return RegionCheck(discardReason = "caret moved: expected ${suggestion.caretOffset}, actual ${suggestion.editor.caretModel.offset}")
+        }
+        return resolveEditableRegion(
+            document = suggestion.document,
+            expectedStartOffset = suggestion.startOffset,
+            expectedEndOffset = suggestion.endOffset,
+            originalText = suggestion.originalText,
+        )
     }
 
-    private fun documentRegionText(
+    private fun resolveEditableRegion(
         document: Document,
-        startOffset: Int,
-        endOffset: Int,
-    ): String? {
-        if (startOffset < 0 || endOffset < startOffset || endOffset > document.textLength) return null
-        return document.text.substring(startOffset, endOffset)
+        expectedStartOffset: Int,
+        expectedEndOffset: Int,
+        originalText: String,
+    ): RegionCheck {
+        val resolution =
+            EditableRegionMatcher.resolve(
+                documentText = document.text,
+                expectedStartOffset = expectedStartOffset,
+                expectedEndOffset = expectedEndOffset,
+                originalText = originalText,
+            )
+        val match = resolution.match
+        return if (match != null) {
+            RegionCheck(
+                region =
+                    ResolvedSuggestionRegion(
+                        startOffset = match.startOffset,
+                        endOffset = match.endOffset,
+                        note = match.note,
+                    ),
+            )
+        } else {
+            RegionCheck(discardReason = resolution.failureReason ?: "editable region could not be matched")
+        }
     }
 
     private fun editorFor(document: Document): Editor? =
