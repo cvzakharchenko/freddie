@@ -9,7 +9,40 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.cvzakharchenko.freddie.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.cvzakharchenko.freddie.startup.MyProjectActivity" />
+        <toolWindow id="Freddie Debug"
+                    anchor="right"
+                    factoryClass="com.github.cvzakharchenko.freddie.debug.FreddieDebugToolWindowFactory"/>
+        <postStartupActivity implementation="com.github.cvzakharchenko.freddie.startup.FreddieProjectActivity" />
+        <applicationService serviceImplementation="com.github.cvzakharchenko.freddie.actions.MercuryEditorActionRouterService" />
+        <applicationConfigurable
+                parentId="tools"
+                displayName="Freddie"
+                id="com.github.cvzakharchenko.freddie.settings"
+                instance="com.github.cvzakharchenko.freddie.settings.FreddieSettingsConfigurable"/>
+        <notificationGroup id="Freddie Mercury" displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <action id="com.github.cvzakharchenko.freddie.RequestMercuryNextEdit"
+                class="com.github.cvzakharchenko.freddie.actions.RequestMercuryNextEditAction"
+                text="Request Mercury Next Edit"
+                description="Request a Mercury next edit prediction">
+            <keyboard-shortcut keymap="$default" first-keystroke="shift ENTER"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="shift ENTER"/>
+        </action>
+        <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEdit"
+                class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditAction"
+                text="Accept Mercury Next Edit"
+                description="Accept the visible Mercury next edit prediction">
+            <keyboard-shortcut keymap="$default" first-keystroke="TAB"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="TAB"/>
+        </action>
+        <action id="com.github.cvzakharchenko.freddie.DismissMercuryNextEdit"
+                class="com.github.cvzakharchenko.freddie.actions.DismissMercuryNextEditAction"
+                text="Dismiss Mercury Next Edit"
+                description="Dismiss the visible Mercury next edit prediction">
+            <keyboard-shortcut keymap="$default" first-keystroke="ESCAPE"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="ESCAPE"/>
+        </action>
+    </actions>
 </idea-plugin>

@@ -1,0 +1,461 @@
+package com.github.cvzakharchenko.freddie.controller
+
+import com.github.cvzakharchenko.freddie.context.MercuryContextCollector
+import com.github.cvzakharchenko.freddie.context.MercuryRequestSnapshot
+import com.github.cvzakharchenko.freddie.context.RecentEditHistory
+import com.github.cvzakharchenko.freddie.context.RecentlyViewedSnippetTracker
+import com.github.cvzakharchenko.freddie.context.projectRelativePath
+import com.github.cvzakharchenko.freddie.debug.FreddieDebugStateService
+import com.github.cvzakharchenko.freddie.mercury.MercuryApiException
+import com.github.cvzakharchenko.freddie.mercury.MercuryClient
+import com.github.cvzakharchenko.freddie.mercury.MercuryCompletion
+import com.github.cvzakharchenko.freddie.presentation.InlineDiffPreviewPresenter
+import com.github.cvzakharchenko.freddie.presentation.MercurySuggestion
+import com.github.cvzakharchenko.freddie.presentation.PresentedSuggestion
+import com.github.cvzakharchenko.freddie.settings.FreddieSettings
+import com.github.cvzakharchenko.freddie.settings.MercuryApiKeyStore
+import com.github.cvzakharchenko.freddie.trigger.MercuryTriggerPolicy
+import com.github.cvzakharchenko.freddie.trigger.TriggerKind
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.event.CaretEvent
+import com.intellij.openapi.editor.event.CaretListener
+import com.intellij.openapi.editor.event.DocumentEvent
+import com.intellij.openapi.editor.event.DocumentListener
+import com.intellij.openapi.editor.event.EditorFactoryEvent
+import com.intellij.openapi.editor.event.EditorFactoryListener
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
+import com.intellij.util.Alarm
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicLong
+
+@Service(Service.Level.PROJECT)
+class MercuryNextEditController(
+    private val project: Project,
+) : Disposable {
+    private data class DocumentTracking(
+        val document: Document,
+        val disposable: Disposable,
+        var lastText: String,
+        var lastEditor: Editor? = null,
+    )
+
+    private val recentEditHistory = RecentEditHistory()
+    private val recentlyViewedSnippetTracker = RecentlyViewedSnippetTracker(project)
+    private val contextCollector = MercuryContextCollector(project, recentEditHistory, recentlyViewedSnippetTracker)
+    private val triggerPolicy = MercuryTriggerPolicy(project)
+    private val debugState = project.service<FreddieDebugStateService>()
+    private val presenter = InlineDiffPreviewPresenter()
+    private val mercuryClient = MercuryClient()
+    private val typedRequestAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private val requestSerial = AtomicLong()
+    private val editorDisposables = linkedMapOf<Editor, Disposable>()
+    private val documentTrackings = linkedMapOf<Document, DocumentTracking>()
+
+    private var started = false
+    private var currentTask: Future<*>? = null
+    private var currentPresentedSuggestion: PresentedSuggestion? = null
+    private var suppressDocumentTriggers = false
+
+    fun start() {
+        if (started || project.isDisposed) return
+        started = true
+        debugState.recordStartup()
+
+        EditorFactory.getInstance().allEditors.forEach { attachEditor(it) }
+        EditorFactory.getInstance().addEditorFactoryListener(
+            object : EditorFactoryListener {
+                override fun editorCreated(event: EditorFactoryEvent) {
+                    attachEditor(event.editor)
+                }
+
+                override fun editorReleased(event: EditorFactoryEvent) {
+                    editorDisposables.remove(event.editor)?.let { Disposer.dispose(it) }
+                }
+            },
+            this,
+        )
+
+        project.messageBus.connect(this).subscribe(
+            FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            object : FileEditorManagerListener {
+                override fun selectionChanged(event: FileEditorManagerEvent) {
+                    invalidatePendingRequests()
+                    clearVisibleSuggestion()
+                    debugState.recordEvent("File selection changed; pending request and preview cleared")
+                    FileEditorManager.getInstance(project).selectedTextEditor?.let { recordEditorVisit(it) }
+                }
+            },
+        )
+    }
+
+    fun requestSuggestion(
+        editor: Editor,
+        triggerKind: TriggerKind,
+    ) {
+        if (project.isDisposed || editor.isDisposed || editor.project != project) {
+            debugState.recordRequestSkipped(triggerKind, "project/editor is no longer valid")
+            return
+        }
+
+        typedRequestAlarm.cancelAllRequests()
+        clearVisibleSuggestion()
+
+        if (!FreddieSettings.getInstance().nextEditEnabled) {
+            debugState.recordRequestSkipped(triggerKind, "next edit prediction is disabled")
+            if (triggerKind == TriggerKind.MANUAL) {
+                notifyUser("Mercury next edit is disabled", "Enable Freddie in Tools > Freddie to request suggestions.")
+            }
+            return
+        }
+
+        val apiKey = MercuryApiKeyStore.getApiKeyOrEnv()
+        if (apiKey.isNullOrBlank()) {
+            debugState.recordRequestSkipped(triggerKind, "Mercury API key is missing")
+            if (triggerKind == TriggerKind.MANUAL) {
+                notifyUser("Missing Mercury API key", "Set a Mercury API key in Tools > Freddie or INCEPTION_API_KEY.")
+            }
+            return
+        }
+
+        recordEditorVisit(editor)
+        val snapshot = contextCollector.capture(editor)
+        if (snapshot == null) {
+            debugState.recordRequestSkipped(triggerKind, "editor context could not be collected")
+            if (triggerKind == TriggerKind.MANUAL) {
+                notifyUser("No editor context", "Freddie could not collect context for this editor.")
+            }
+            return
+        }
+
+        val requestId = requestSerial.incrementAndGet()
+        debugState.recordRequestStarted(triggerKind, requestId, snapshot)
+        currentTask?.cancel(true)
+        currentTask =
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    val completion = mercuryClient.requestNextEdit(snapshot.prompt, apiKey)
+                    ApplicationManager.getApplication().invokeLater(
+                        { handleCompletion(requestId, snapshot, completion) },
+                        ModalityState.any(),
+                    )
+                } catch (error: MercuryApiException) {
+                    ApplicationManager.getApplication().invokeLater(
+                        { handleRequestError(requestId, triggerKind, error) },
+                        ModalityState.any(),
+                    )
+                } catch (error: Throwable) {
+                    ApplicationManager.getApplication().invokeLater(
+                        { handleRequestError(requestId, triggerKind, error) },
+                        ModalityState.any(),
+                    )
+                }
+            }
+    }
+
+    fun acceptCurrentSuggestion(): Boolean {
+        val presented = currentPresentedSuggestion ?: return false
+        val suggestion = presented.suggestion
+        val stalenessReason = suggestionStalenessReason(suggestion)
+        if (stalenessReason != null) {
+            invalidatePendingRequests()
+            clearVisibleSuggestion()
+            debugState.recordSuggestionResult("Suggestion was not accepted: $stalenessReason", visibleSuggestion = false)
+            return false
+        }
+
+        val beforeText = suggestion.document.text
+        suppressDocumentTriggers = true
+        try {
+            WriteCommandAction.runWriteCommandAction(
+                project,
+                "Accept Mercury Next Edit",
+                null,
+                Runnable {
+                    suggestion.document.replaceString(
+                        suggestion.startOffset,
+                        suggestion.endOffset,
+                        suggestion.replacementText,
+                    )
+                    val newCaretOffset = (suggestion.startOffset + suggestion.replacementText.length)
+                        .coerceIn(0, suggestion.document.textLength)
+                    suggestion.editor.caretModel.moveToOffset(newCaretOffset)
+                },
+            )
+        } finally {
+            suppressDocumentTriggers = false
+        }
+
+        trackingFor(suggestion.document).lastText = suggestion.document.text
+        recentEditHistory.recordEdit(suggestion.filePath, beforeText, suggestion.document.text)
+        invalidatePendingRequests()
+        clearVisibleSuggestion()
+        debugState.recordSuggestionResult("Suggestion accepted", visibleSuggestion = false)
+        return beforeText != suggestion.document.text
+    }
+
+    fun dismissCurrentSuggestion(): Boolean {
+        val hadSuggestion = currentPresentedSuggestion != null
+        invalidatePendingRequests()
+        clearVisibleSuggestion()
+        debugState.recordSuggestionResult("Suggestion dismissed", visibleSuggestion = false)
+        return hadSuggestion
+    }
+
+    fun hasVisibleSuggestion(): Boolean = currentPresentedSuggestion != null
+
+    private fun attachEditor(editor: Editor) {
+        if (project.isDisposed || editor.isDisposed || editor.project != project) return
+        if (editorDisposables.containsKey(editor)) return
+
+        val disposable = Disposer.newDisposable("Freddie editor listeners")
+        Disposer.register(this, disposable)
+        editorDisposables[editor] = disposable
+
+        val tracking = trackingFor(editor.document)
+        tracking.lastEditor = editor
+        recordEditorVisit(editor)
+
+        editor.caretModel.addCaretListener(
+            object : CaretListener {
+                override fun caretPositionChanged(event: CaretEvent) {
+                    tracking.lastEditor = editor
+                    recordEditorVisit(editor)
+                    invalidateActiveRequest()
+                    clearVisibleSuggestion()
+                    debugState.recordEvent("Caret moved; active request and preview cleared")
+                }
+            },
+            disposable,
+        )
+    }
+
+    private fun trackingFor(document: Document): DocumentTracking =
+        documentTrackings.getOrPut(document) {
+            val disposable = Disposer.newDisposable("Freddie document listener")
+            Disposer.register(this, disposable)
+            lateinit var tracking: DocumentTracking
+            tracking = DocumentTracking(document, disposable, document.text)
+            document.addDocumentListener(
+                object : DocumentListener {
+                    override fun documentChanged(event: DocumentEvent) {
+                        onDocumentChanged(tracking, event)
+                    }
+                },
+                disposable,
+            )
+            tracking
+        }
+
+    private fun onDocumentChanged(
+        tracking: DocumentTracking,
+        event: DocumentEvent,
+    ) {
+        val oldText = tracking.lastText
+        val newText = event.document.text
+        tracking.lastText = newText
+
+        if (suppressDocumentTriggers) return
+
+        invalidatePendingRequests()
+        clearVisibleSuggestion()
+
+        val file = FileDocumentManager.getInstance().getFile(event.document)
+        if (file != null) {
+            recentEditHistory.recordEdit(projectRelativePath(project, file), oldText, newText)
+        }
+
+        val editor = tracking.lastEditor?.takeUnless { it.isDisposed } ?: editorFor(event.document) ?: return
+        tracking.lastEditor = editor
+        val decision = triggerPolicy.decisionAfterTypedEdit(editor, event)
+        debugState.recordTypedDecision(decision, FreddieSettings.getInstance().debounceMs)
+        if (decision.shouldRequest) {
+            scheduleTypedRequest(editor)
+        }
+    }
+
+    private fun scheduleTypedRequest(editor: Editor) {
+        typedRequestAlarm.cancelAllRequests()
+        typedRequestAlarm.addRequest(
+            { requestSuggestion(editor, TriggerKind.TYPED_EDIT) },
+            FreddieSettings.getInstance().debounceMs,
+        )
+    }
+
+    private fun handleCompletion(
+        requestId: Long,
+        snapshot: MercuryRequestSnapshot,
+        completion: MercuryCompletion,
+    ) {
+        if (requestId != requestSerial.get() || project.isDisposed) {
+            debugState.recordEvent("Ignored stale Mercury response for request #$requestId")
+            return
+        }
+        currentTask = null
+        debugState.recordResponse(completion)
+
+        val replacementText = completion.replacementText
+        if (replacementText == null) {
+            debugState.recordSuggestionResult("Mercury returned None or no choice content", visibleSuggestion = false)
+            return
+        }
+        if (replacementText == snapshot.editableRegion.originalText) {
+            debugState.recordSuggestionResult("Mercury replacement matched the editable region exactly", visibleSuggestion = false)
+            return
+        }
+
+        val stalenessReason = snapshotStalenessReason(snapshot)
+        if (stalenessReason != null) {
+            debugState.recordSuggestionResult("Mercury response discarded: $stalenessReason", visibleSuggestion = false)
+            return
+        }
+
+        val suggestion =
+            MercurySuggestion(
+                editor = snapshot.editor,
+                document = snapshot.document,
+                filePath = snapshot.filePath,
+                modificationStamp = snapshot.modificationStamp,
+                caretOffset = snapshot.caretOffset,
+                startOffset = snapshot.editableRegion.startOffset,
+                endOffset = snapshot.editableRegion.endOffset,
+                originalText = snapshot.editableRegion.originalText,
+                replacementText = replacementText,
+            )
+        currentPresentedSuggestion = presenter.show(suggestion)
+        debugState.recordSuggestionResult(
+            message =
+                if (currentPresentedSuggestion == null) {
+                    "Preview was not rendered because the diff was empty"
+                } else {
+                    "Inline diff preview is visible"
+                },
+            visibleSuggestion = currentPresentedSuggestion != null,
+        )
+    }
+
+    private fun handleRequestError(
+        requestId: Long,
+        triggerKind: TriggerKind,
+        error: Throwable,
+    ) {
+        if (requestId != requestSerial.get() || project.isDisposed) {
+            debugState.recordEvent("Ignored stale Mercury error for request #$requestId")
+            return
+        }
+        currentTask = null
+        debugState.recordError(triggerKind, error)
+
+        if (triggerKind == TriggerKind.MANUAL && shouldNotify(error)) {
+            notifyUser("Mercury request failed", error.message ?: "Unknown Mercury error")
+        } else {
+            LOG.debug("Mercury next edit request failed", error)
+        }
+    }
+
+    private fun shouldNotify(error: Throwable): Boolean =
+        error !is MercuryApiException || error.shouldNotifyUser
+
+    private fun snapshotStalenessReason(snapshot: MercuryRequestSnapshot): String? {
+        val selectedEditor = FileEditorManager.getInstance(project).selectedTextEditor
+        if (selectedEditor != snapshot.editor) return "selected editor changed"
+        if (snapshot.editor.isDisposed) return "editor was disposed"
+        if (snapshot.document.modificationStamp != snapshot.modificationStamp) return "document modification stamp changed"
+        if (snapshot.editor.caretModel.offset != snapshot.caretOffset) return "caret moved"
+        return documentRegionText(
+            snapshot.document,
+            snapshot.editableRegion.startOffset,
+            snapshot.editableRegion.endOffset,
+        )
+            ?.let { if (it == snapshot.editableRegion.originalText) null else "editable region text changed" }
+            ?: "editable region offsets are no longer valid"
+    }
+
+    private fun suggestionStalenessReason(suggestion: MercurySuggestion): String? {
+        if (suggestion.editor.isDisposed) return "editor was disposed"
+        if (suggestion.document.modificationStamp != suggestion.modificationStamp) return "document modification stamp changed"
+        if (suggestion.editor.caretModel.offset != suggestion.caretOffset) return "caret moved"
+        return documentRegionText(suggestion.document, suggestion.startOffset, suggestion.endOffset)
+            ?.let { if (it == suggestion.originalText) null else "editable region text changed" }
+            ?: "editable region offsets are no longer valid"
+    }
+
+    private fun documentRegionText(
+        document: Document,
+        startOffset: Int,
+        endOffset: Int,
+    ): String? {
+        if (startOffset < 0 || endOffset < startOffset || endOffset > document.textLength) return null
+        return document.text.substring(startOffset, endOffset)
+    }
+
+    private fun editorFor(document: Document): Editor? =
+        EditorFactory
+            .getInstance()
+            .allEditors
+            .firstOrNull { it.project == project && it.document == document && !it.isDisposed }
+
+    private fun recordEditorVisit(editor: Editor) {
+        if (!editor.isDisposed && editor.project == project) {
+            recentlyViewedSnippetTracker.record(editor)
+            trackingFor(editor.document).lastEditor = editor
+        }
+    }
+
+    private fun invalidatePendingRequests() {
+        invalidateActiveRequest()
+        typedRequestAlarm.cancelAllRequests()
+    }
+
+    private fun invalidateActiveRequest() {
+        requestSerial.incrementAndGet()
+        currentTask?.cancel(true)
+        currentTask = null
+    }
+
+    private fun clearVisibleSuggestion() {
+        currentPresentedSuggestion = null
+        presenter.dispose()
+    }
+
+    private fun notifyUser(
+        title: String,
+        message: String,
+        type: NotificationType = NotificationType.ERROR,
+    ) {
+        NotificationGroupManager
+            .getInstance()
+            .getNotificationGroup(NOTIFICATION_GROUP)
+            .createNotification(title, message, type)
+            .notify(project)
+    }
+
+    override fun dispose() {
+        invalidatePendingRequests()
+        clearVisibleSuggestion()
+        editorDisposables.values.forEach { Disposer.dispose(it) }
+        editorDisposables.clear()
+        documentTrackings.values.forEach { Disposer.dispose(it.disposable) }
+        documentTrackings.clear()
+    }
+
+    companion object {
+        private val LOG = Logger.getInstance(MercuryNextEditController::class.java)
+        private const val NOTIFICATION_GROUP = "Freddie Mercury"
+    }
+}
