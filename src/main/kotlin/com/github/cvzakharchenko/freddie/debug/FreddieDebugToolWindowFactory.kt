@@ -57,6 +57,7 @@ private class FreddieDebugPanel(
     private val eventLabel = JBLabel()
     private val contextArea = debugTextArea()
     private val codeToEditArea = debugTextArea()
+    private val recentEditsArea = debugTextArea()
     private val promptArea = debugTextArea()
     private val responseSummaryArea = debugTextArea()
     private val responseChoiceArea = debugTextArea(editable = true)
@@ -101,6 +102,7 @@ private class FreddieDebugPanel(
         eventLabel.text = "Last event: ${snapshot.lastEvent}    Updated: ${formatTime(snapshot.updatedAtMillis)}"
         contextArea.text = formatContext(snapshot.context)
         codeToEditArea.text = snapshot.lastCodeToEdit.ifBlank { "No code_to_edit block captured yet." }
+        recentEditsArea.text = formatRecentEdits(snapshot.recentEditDiffsOldestToNewest)
         promptArea.text = snapshot.lastPrompt.ifBlank { "No prompt captured yet." }
         responseSummaryArea.text = formatResponseSummary(snapshot)
         responseRawArea.text = snapshot.lastRawResponseBody.ifBlank { "No raw response body captured yet." }
@@ -109,7 +111,7 @@ private class FreddieDebugPanel(
             setChoiceText(snapshot.lastResponseText, preview = false)
         }
         eventsArea.text = snapshot.events.joinToString("\n").ifBlank { "No activity yet." }
-        listOf(contextArea, codeToEditArea, promptArea, responseSummaryArea, responseRawArea, eventsArea).forEach { it.caretPosition = 0 }
+        listOf(contextArea, codeToEditArea, recentEditsArea, promptArea, responseSummaryArea, responseRawArea, eventsArea).forEach { it.caretPosition = 0 }
     }
 
     private fun buildSummaryPanel(): JComponent =
@@ -152,6 +154,7 @@ private class FreddieDebugPanel(
         JTabbedPane().apply {
             addTab("Context", JBScrollPane(contextArea))
             addTab("code_to_edit", JBScrollPane(codeToEditArea))
+            addTab("Recent Edits", JBScrollPane(recentEditsArea))
             addTab("Prompt", JBScrollPane(promptArea))
             addTab("Response", buildResponseTab())
             addTab("Events", JBScrollPane(eventsArea))
@@ -271,6 +274,20 @@ private class FreddieDebugPanel(
             appendLine("recently viewed snippets: ${context.snippets.size}")
             context.snippets.forEachIndexed { index, snippet ->
                 appendLine("${index + 1}. ${snippet.filePath}:${snippet.startLine}-${snippet.endLine} (${snippet.charCount} chars)")
+            }
+        }
+    }
+
+    private fun formatRecentEdits(diffs: List<String>): String {
+        if (diffs.isEmpty()) return "No recent edit diffs captured yet."
+
+        return buildString {
+            appendLine("${diffs.size} recent edit diff(s), oldest to newest")
+            diffs.forEachIndexed { index, diff ->
+                appendLine()
+                appendLine("### ${index + 1}")
+                append(diff)
+                if (!diff.endsWith("\n")) appendLine()
             }
         }
     }

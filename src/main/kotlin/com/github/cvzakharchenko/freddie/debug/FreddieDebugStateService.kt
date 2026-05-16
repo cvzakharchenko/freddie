@@ -28,6 +28,7 @@ data class FreddieDebugSnapshot(
     val context: MercuryContextDebugInfo? = null,
     val lastPrompt: String = "",
     val lastCodeToEdit: String = "",
+    val recentEditDiffsOldestToNewest: List<String> = emptyList(),
     val lastResponseSummary: String = "No response yet.",
     val lastResponseText: String = "",
     val lastRawResponseBody: String = "",
@@ -127,6 +128,7 @@ class FreddieDebugStateService(
                 context = requestSnapshot.debugInfo,
                 lastPrompt = requestSnapshot.prompt,
                 lastCodeToEdit = requestSnapshot.debugInfo.codeToEditBlock,
+                recentEditDiffsOldestToNewest = requestSnapshot.debugInfo.editDiffsOldestToNewest,
                 lastResponseSummary = "Waiting for Mercury response...",
                 lastResponseText = "",
                 lastRawResponseBody = "",
@@ -157,6 +159,15 @@ class FreddieDebugStateService(
                 lastError = "",
             )
         }
+    }
+
+    fun recordRecentEditDiffs(diffsOldestToNewest: List<String>) {
+        publish(
+            snapshot.copy(
+                recentEditDiffsOldestToNewest = diffsOldestToNewest,
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+        )
     }
 
     fun recordSuggestionResult(

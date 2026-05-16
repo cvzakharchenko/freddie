@@ -13,6 +13,7 @@
                     anchor="right"
                     factoryClass="com.github.cvzakharchenko.freddie.debug.FreddieDebugToolWindowFactory"/>
         <postStartupActivity implementation="com.github.cvzakharchenko.freddie.startup.FreddieProjectActivity" />
+        <applicationService serviceImplementation="com.github.cvzakharchenko.freddie.actions.MercuryInlineCompletionActionBridgeService" />
         <applicationConfigurable
                 parentId="tools"
                 displayName="Freddie"
@@ -33,18 +34,15 @@
         <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEdit"
                 class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditAction"
                 text="Accept Mercury Next Edit"
-                description="Accept the visible Mercury next edit prediction"
-                use-shortcut-of="InsertInlineCompletionAction"/>
+                description="Accept the visible Mercury next edit prediction"/>
         <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEditWord"
                 class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditWordAction"
                 text="Accept Mercury Next Edit Word"
-                description="Accept the next word from the visible Mercury next edit prediction"
-                use-shortcut-of="InsertInlineCompletionWordAction"/>
+                description="Accept the next word from the visible Mercury next edit prediction"/>
         <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEditLine"
                 class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditLineAction"
                 text="Accept Mercury Next Edit Line"
-                description="Accept the next line from the visible Mercury next edit prediction"
-                use-shortcut-of="InsertInlineCompletionLineAction"/>
+                description="Accept the next line from the visible Mercury next edit prediction"/>
         <action id="com.github.cvzakharchenko.freddie.DismissMercuryNextEdit"
                 class="com.github.cvzakharchenko.freddie.actions.DismissMercuryNextEditAction"
                 text="Dismiss Mercury Next Edit"

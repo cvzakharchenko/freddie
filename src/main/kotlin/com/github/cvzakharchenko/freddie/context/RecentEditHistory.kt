@@ -3,17 +3,17 @@ package com.github.cvzakharchenko.freddie.context
 import kotlin.math.max
 import kotlin.math.min
 
-data class RecentEdit(
+private data class RecentEdit(
     val filePath: String,
     val originalText: String,
     val newText: String,
-    val timestamp: Long = System.currentTimeMillis(),
 ) {
     val formattedDiff: String? = UnifiedDiffBuilder.build(filePath, originalText, newText)
+    val changedLines: ChangedLineRanges = ChangedLineRanges.between(originalText, newText)
 }
 
 class RecentEditHistory {
-    private val edits = ArrayDeque<RecentEdit>()
+    private val edits = mutableListOf<RecentEdit>()
 
     fun recordEdit(
         filePath: String,
@@ -26,24 +26,74 @@ class RecentEditHistory {
         val diff = candidate.formattedDiff ?: return
         if (diff.length > MAX_DIFF_CHARS || changedLineCount(diff) > MAX_CHANGED_LINES) return
 
-        val previous = edits.lastOrNull()
-        if (previous != null && previous.filePath == filePath && candidate.timestamp - previous.timestamp <= COALESCE_WINDOW_MS) {
-            val combined = RecentEdit(filePath, previous.originalText, newText)
-            val combinedDiff = combined.formattedDiff
-            if (combinedDiff != null && combinedDiff.length <= MAX_DIFF_CHARS && changedLineCount(combinedDiff) <= MAX_CHANGED_LINES) {
-                edits.removeLast()
-                edits.addLast(combined)
-                return
+        val previousIndex = edits.indexOfLast { it.canCoalesceWith(candidate) }
+        if (previousIndex >= 0) {
+            val previous = edits[previousIndex]
+            val patchedNewText = previous.apply(candidate)
+            edits.removeAt(previousIndex)
+
+            when {
+                patchedNewText == null -> edits.add(candidate)
+                patchedNewText == previous.originalText -> Unit
+                else -> {
+                    val combined = RecentEdit(filePath, previous.originalText, patchedNewText)
+                    edits.add(if (keepEdit(combined)) combined else candidate)
+                }
             }
+            trimOldestEdits()
+            return
         }
 
-        edits.addLast(candidate)
-        while (edits.size > MAX_EDITS) {
-            edits.removeFirst()
-        }
+        edits.add(candidate)
+        trimOldestEdits()
     }
 
     fun formattedDiffs(): List<String> = edits.mapNotNull { it.formattedDiff }
+
+    private fun RecentEdit.canCoalesceWith(candidate: RecentEdit): Boolean {
+        if (filePath != candidate.filePath) return false
+        if (changedLines.newRange.lineGapTo(candidate.changedLines.oldRange) > MAX_COALESCE_GAP_LINES) return false
+        return canApply(candidate)
+    }
+
+    private fun RecentEdit.canApply(candidate: RecentEdit): Boolean {
+        val previousCurrentLines = sliceLines(newText, candidate.changedLines.oldRange) ?: return false
+        val candidateOriginalLines = sliceLines(candidate.originalText, candidate.changedLines.oldRange) ?: return false
+        return previousCurrentLines == candidateOriginalLines
+    }
+
+    private fun RecentEdit.apply(candidate: RecentEdit): String? {
+        val oldRange = candidate.changedLines.oldRange
+        val previousLines = newText.split('\n')
+        if (oldRange.start !in 0..previousLines.size || oldRange.end !in 0..previousLines.size) return null
+
+        val newLines = sliceLines(candidate.newText, candidate.changedLines.newRange) ?: return null
+        return buildList {
+            addAll(previousLines.subList(0, oldRange.start))
+            addAll(newLines)
+            addAll(previousLines.subList(oldRange.end, previousLines.size))
+        }.joinToString("\n")
+    }
+
+    private fun sliceLines(
+        text: String,
+        range: LineRange,
+    ): List<String>? {
+        val lines = text.split('\n')
+        if (range.start !in 0..lines.size || range.end !in 0..lines.size || range.start > range.end) return null
+        return lines.subList(range.start, range.end)
+    }
+
+    private fun keepEdit(edit: RecentEdit): Boolean {
+        val diff = edit.formattedDiff ?: return false
+        return diff.length <= MAX_DIFF_CHARS && changedLineCount(diff) <= MAX_CHANGED_LINES
+    }
+
+    private fun trimOldestEdits() {
+        while (edits.size > MAX_EDITS) {
+            edits.removeAt(0)
+        }
+    }
 
     private fun changedLineCount(diff: String): Int =
         diff
@@ -54,12 +104,63 @@ class RecentEditHistory {
         private const val MAX_EDITS = 8
         private const val MAX_DIFF_CHARS = 20_000
         private const val MAX_CHANGED_LINES = 24
-        private const val COALESCE_WINDOW_MS = 1500L
+        private const val MAX_COALESCE_GAP_LINES = 5
     }
+}
+
+private data class ChangedLineRanges(
+    val oldRange: LineRange,
+    val newRange: LineRange,
+) {
+    companion object {
+        fun between(
+            originalText: String,
+            newText: String,
+        ): ChangedLineRanges {
+            val oldLines = originalText.split('\n')
+            val newLines = newText.split('\n')
+
+            var prefix = 0
+            while (prefix < oldLines.size && prefix < newLines.size && oldLines[prefix] == newLines[prefix]) {
+                prefix++
+            }
+
+            var suffix = 0
+            while (
+                suffix < oldLines.size - prefix &&
+                suffix < newLines.size - prefix &&
+                oldLines[oldLines.lastIndex - suffix] == newLines[newLines.lastIndex - suffix]
+            ) {
+                suffix++
+            }
+
+            return ChangedLineRanges(
+                oldRange = LineRange(prefix, oldLines.size - suffix),
+                newRange = LineRange(prefix, newLines.size - suffix),
+            )
+        }
+    }
+}
+
+private data class LineRange(
+    val start: Int,
+    val end: Int,
+) {
+    init {
+        require(start <= end)
+    }
+
+    fun lineGapTo(other: LineRange): Int =
+        when {
+            end < other.start -> other.start - end
+            other.end < start -> start - other.end
+            else -> 0
+        }
 }
 
 object UnifiedDiffBuilder {
     private const val CONTEXT_LINES = 2
+    private const val MAX_SMART_DIFF_CELLS = 200_000
 
     fun build(
         filePath: String,
@@ -70,24 +171,11 @@ object UnifiedDiffBuilder {
 
         val oldLines = originalText.split('\n')
         val newLines = newText.split('\n')
-        var prefix = 0
-        while (prefix < oldLines.size && prefix < newLines.size && oldLines[prefix] == newLines[prefix]) {
-            prefix++
-        }
-
-        var suffix = 0
-        while (
-            suffix < oldLines.size - prefix &&
-            suffix < newLines.size - prefix &&
-            oldLines[oldLines.lastIndex - suffix] == newLines[newLines.lastIndex - suffix]
-        ) {
-            suffix++
-        }
-
-        val oldChangeStart = prefix
-        val oldChangeEnd = oldLines.size - suffix
-        val newChangeStart = prefix
-        val newChangeEnd = newLines.size - suffix
+        val changedLines = ChangedLineRanges.between(originalText, newText)
+        val oldChangeStart = changedLines.oldRange.start
+        val oldChangeEnd = changedLines.oldRange.end
+        val newChangeStart = changedLines.newRange.start
+        val newChangeEnd = changedLines.newRange.end
 
         val hunkOldStart = max(0, oldChangeStart - CONTEXT_LINES)
         val hunkNewStart = max(0, newChangeStart - CONTEXT_LINES)
@@ -105,9 +193,83 @@ object UnifiedDiffBuilder {
             appendLine("@@ -$oldStartDisplay,$oldLen +$newStartDisplay,$newLen @@")
 
             oldLines.subList(hunkOldStart, oldChangeStart).forEach { appendLine(" $it") }
-            oldLines.subList(oldChangeStart, oldChangeEnd).forEach { appendLine("-$it") }
-            newLines.subList(newChangeStart, newChangeEnd).forEach { appendLine("+$it") }
+            appendChangedLines(
+                oldLines = oldLines.subList(oldChangeStart, oldChangeEnd),
+                newLines = newLines.subList(newChangeStart, newChangeEnd),
+            )
             oldLines.subList(oldChangeEnd, hunkOldEnd).forEach { appendLine(" $it") }
         }.trimEnd()
+    }
+
+    private fun StringBuilder.appendChangedLines(
+        oldLines: List<String>,
+        newLines: List<String>,
+    ) {
+        val cells = oldLines.size.toLong() * newLines.size.toLong()
+        if (cells > MAX_SMART_DIFF_CELLS) {
+            oldLines.forEach { appendLine("-$it") }
+            newLines.forEach { appendLine("+$it") }
+            return
+        }
+
+        for (line in buildLineDiff(oldLines, newLines)) {
+            appendLine("${line.kind.marker}${line.text}")
+        }
+    }
+
+    private fun buildLineDiff(
+        oldLines: List<String>,
+        newLines: List<String>,
+    ): List<DiffLine> {
+        val suffixLengths = Array(oldLines.size + 1) { IntArray(newLines.size + 1) }
+        for (oldIndex in oldLines.indices.reversed()) {
+            for (newIndex in newLines.indices.reversed()) {
+                suffixLengths[oldIndex][newIndex] =
+                    if (oldLines[oldIndex] == newLines[newIndex]) {
+                        suffixLengths[oldIndex + 1][newIndex + 1] + 1
+                    } else {
+                        max(suffixLengths[oldIndex + 1][newIndex], suffixLengths[oldIndex][newIndex + 1])
+                    }
+            }
+        }
+
+        val diff = mutableListOf<DiffLine>()
+        var oldIndex = 0
+        var newIndex = 0
+        while (oldIndex < oldLines.size && newIndex < newLines.size) {
+            if (oldLines[oldIndex] == newLines[newIndex]) {
+                diff.add(DiffLine(DiffLineKind.CONTEXT, oldLines[oldIndex]))
+                oldIndex++
+                newIndex++
+            } else if (suffixLengths[oldIndex + 1][newIndex] >= suffixLengths[oldIndex][newIndex + 1]) {
+                diff.add(DiffLine(DiffLineKind.DELETE, oldLines[oldIndex]))
+                oldIndex++
+            } else {
+                diff.add(DiffLine(DiffLineKind.INSERT, newLines[newIndex]))
+                newIndex++
+            }
+        }
+        while (oldIndex < oldLines.size) {
+            diff.add(DiffLine(DiffLineKind.DELETE, oldLines[oldIndex]))
+            oldIndex++
+        }
+        while (newIndex < newLines.size) {
+            diff.add(DiffLine(DiffLineKind.INSERT, newLines[newIndex]))
+            newIndex++
+        }
+        return diff
+    }
+
+    private data class DiffLine(
+        val kind: DiffLineKind,
+        val text: String,
+    )
+
+    private enum class DiffLineKind(
+        val marker: String,
+    ) {
+        CONTEXT(" "),
+        DELETE("-"),
+        INSERT("+"),
     }
 }

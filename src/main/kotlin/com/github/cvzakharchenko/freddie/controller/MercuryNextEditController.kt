@@ -252,7 +252,6 @@ class MercuryNextEditController(
         }
 
         val beforeText = suggestion.document.text
-        val currentCaretOffset = suggestion.editor.caretModel.offset
         suppressDocumentTriggers = true
         try {
             WriteCommandAction.runWriteCommandAction(
@@ -266,11 +265,12 @@ class MercuryNextEditController(
                         accepted.text,
                     )
                     val newCaretOffset =
-                        mapCaretAfterReplacement(
-                            caretOffset = currentCaretOffset,
-                            region = resolvedRegion,
-                            originalText = suggestion.originalText,
-                            replacementText = accepted.text,
+                        (
+                            resolvedRegion.startOffset +
+                                SuggestionCaretMapper.caretAfterLastAppliedBlock(
+                                    originalText = suggestion.originalText,
+                                    replacementText = accepted.text,
+                                )
                         ).coerceIn(0, suggestion.document.textLength)
                     suggestion.editor.caretModel.moveToOffset(newCaretOffset)
                 },
@@ -280,11 +280,12 @@ class MercuryNextEditController(
         }
 
         trackingFor(suggestion.document).lastText = suggestion.document.text
-        recentEditHistory.recordEdit(suggestion.filePath, beforeText, suggestion.document.text)
+        recordEditHistory(suggestion.filePath, beforeText, suggestion.document.text)
         invalidatePendingRequests()
         if (accepted.completed) {
             clearVisibleSuggestion()
             debugState.recordSuggestionResult(completedMessage, visibleSuggestion = false)
+            requestSuggestion(suggestion.editor, TriggerKind.ACCEPTED_SUGGESTION)
         } else {
             val updatedSuggestion =
                 suggestion.copy(
@@ -581,26 +582,17 @@ class MercuryNextEditController(
         newText: String,
     ) {
         val file = FileDocumentManager.getInstance().getFile(document) ?: return
-        recentEditHistory.recordEdit(projectRelativePath(project, file), oldText, newText)
+        recordEditHistory(projectRelativePath(project, file), oldText, newText)
     }
 
-    private fun mapCaretAfterReplacement(
-        caretOffset: Int,
-        region: ResolvedSuggestionRegion,
-        originalText: String,
-        replacementText: String,
-    ): Int =
-        when {
-            caretOffset <= region.startOffset -> caretOffset
-            caretOffset > region.endOffset -> caretOffset + replacementText.length - originalText.length
-            else ->
-                region.startOffset +
-                    SuggestionCaretMapper.mapCaretOffset(
-                        originalText = originalText,
-                        replacementText = replacementText,
-                        caretOffsetInOriginal = caretOffset - region.startOffset,
-                    )
-        }
+    private fun recordEditHistory(
+        filePath: String,
+        oldText: String,
+        newText: String,
+    ) {
+        recentEditHistory.recordEdit(filePath, oldText, newText)
+        debugState.recordRecentEditDiffs(recentEditHistory.formattedDiffs())
+    }
 
     private fun handleRequestError(
         requestId: Long,

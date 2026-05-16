@@ -6,29 +6,50 @@ import org.junit.Test
 
 class SuggestionCaretMapperTest {
     @Test
-    fun `keeps caret after unchanged prefix when suggestion edits after caret`() {
-        val original = "before\ncaret"
-        val replacement = "before\ncaret\ninserted"
-        val caret = "before".length
+    fun `moves caret to the end of a replaced current line`() {
+        val original = "return fu"
+        val replacement = "return function();"
 
-        assertEquals(caret, SuggestionCaretMapper.mapCaretOffset(original, replacement, caret))
+        assertEquals(replacement.length, SuggestionCaretMapper.caretAfterLastAppliedBlock(original, replacement))
     }
 
     @Test
-    fun `shifts caret with unchanged suffix when suggestion inserts before caret`() {
-        val original = "one\ncaret line\nnext\n"
-        val replacement = "one\ninserted\ncaret line\nnext\n"
-        val caret = original.indexOf("\nnext")
+    fun `moves caret to the end of an inserted line before unchanged suffix`() {
+        val original = "one\nfour\n"
+        val replacement = "one\ntwo\nfour\n"
 
-        assertEquals(replacement.indexOf("\nnext"), SuggestionCaretMapper.mapCaretOffset(original, replacement, caret))
+        assertEquals(replacement.indexOf("\nfour"), SuggestionCaretMapper.caretAfterLastAppliedBlock(original, replacement))
     }
 
     @Test
-    fun `keeps caret at the end of a replaced current line`() {
+    fun `moves caret to the end of the last changed block`() {
+        val original = "one\nold two\nthree\nold four\nfive\n"
+        val replacement = "one\nnew two\nthree\nnew four\nfive\n"
+
+        assertEquals(replacement.indexOf("\nfive"), SuggestionCaretMapper.caretAfterLastAppliedBlock(original, replacement))
+    }
+
+    @Test
+    fun `moves caret to the deletion anchor for deletion-only changes`() {
+        val original = "one\ndelete me\nthree\n"
+        val replacement = "one\nthree\n"
+
+        assertEquals(replacement.indexOf("three"), SuggestionCaretMapper.caretAfterLastAppliedBlock(original, replacement))
+    }
+
+    @Test
+    fun `moves caret before the line separator of a replaced line`() {
         val original = "\t\t\treturn \"\";\n\t\tcase AuthStatus::ErrorPrefabHash:\n"
         val replacement = "\t\t\treturn \"predefined replicables hashes mismatch\";\n\t\tcase AuthStatus::ErrorPrefabHash:\n"
-        val caret = original.indexOf('\n')
 
-        assertEquals(replacement.indexOf('\n'), SuggestionCaretMapper.mapCaretOffset(original, replacement, caret))
+        assertEquals(replacement.indexOf('\n'), SuggestionCaretMapper.caretAfterLastAppliedBlock(original, replacement))
+    }
+
+    @Test
+    fun `handles CRLF line endings`() {
+        val original = "one\r\nfour\r\n"
+        val replacement = "one\r\ntwo\r\nfour\r\n"
+
+        assertEquals(replacement.indexOf("\r\nfour"), SuggestionCaretMapper.caretAfterLastAppliedBlock(original, replacement))
     }
 }
