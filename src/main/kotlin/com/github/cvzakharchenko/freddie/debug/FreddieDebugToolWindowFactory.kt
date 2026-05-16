@@ -1,5 +1,6 @@
 package com.github.cvzakharchenko.freddie.debug
 
+import com.github.cvzakharchenko.freddie.context.ContextBudgetDebugInfo
 import com.github.cvzakharchenko.freddie.context.MercuryContextDebugInfo
 import com.github.cvzakharchenko.freddie.controller.MercuryNextEditController
 import com.intellij.openapi.Disposable
@@ -58,6 +59,7 @@ private class FreddieDebugPanel(
     private val contextArea = debugTextArea()
     private val codeToEditArea = debugTextArea()
     private val recentEditsArea = debugTextArea()
+    private val copiedSnippetsArea = debugTextArea()
     private val promptArea = debugTextArea()
     private val responseSummaryArea = debugTextArea()
     private val responseChoiceArea = debugTextArea(editable = true)
@@ -103,6 +105,7 @@ private class FreddieDebugPanel(
         contextArea.text = formatContext(snapshot.context)
         codeToEditArea.text = snapshot.lastCodeToEdit.ifBlank { "No code_to_edit block captured yet." }
         recentEditsArea.text = formatRecentEdits(snapshot.recentEditDiffsOldestToNewest)
+        copiedSnippetsArea.text = formatCopiedSnippets(snapshot.context)
         promptArea.text = snapshot.lastPrompt.ifBlank { "No prompt captured yet." }
         responseSummaryArea.text = formatResponseSummary(snapshot)
         responseRawArea.text = snapshot.lastRawResponseBody.ifBlank { "No raw response body captured yet." }
@@ -111,7 +114,8 @@ private class FreddieDebugPanel(
             setChoiceText(snapshot.lastResponseText, preview = false)
         }
         eventsArea.text = snapshot.events.joinToString("\n").ifBlank { "No activity yet." }
-        listOf(contextArea, codeToEditArea, recentEditsArea, promptArea, responseSummaryArea, responseRawArea, eventsArea).forEach { it.caretPosition = 0 }
+        listOf(contextArea, codeToEditArea, recentEditsArea, copiedSnippetsArea, promptArea, responseSummaryArea, responseRawArea, eventsArea)
+            .forEach { it.caretPosition = 0 }
     }
 
     private fun buildSummaryPanel(): JComponent =
@@ -155,6 +159,7 @@ private class FreddieDebugPanel(
             addTab("Context", JBScrollPane(contextArea))
             addTab("code_to_edit", JBScrollPane(codeToEditArea))
             addTab("Recent Edits", JBScrollPane(recentEditsArea))
+            addTab("Copied Snippets", JBScrollPane(copiedSnippetsArea))
             addTab("Prompt", JBScrollPane(promptArea))
             addTab("Response", buildResponseTab())
             addTab("Events", JBScrollPane(eventsArea))
@@ -271,12 +276,28 @@ private class FreddieDebugPanel(
             appendLine("recent edit diffs: ${context.editDiffCount}")
             appendLine("prompt chars: ${context.promptCharCount}")
             appendLine()
-            appendLine("recently viewed snippets: ${context.snippets.size}")
-            context.snippets.forEachIndexed { index, snippet ->
+            appendLine("budgets:")
+            appendLine("  current file: ${formatBudget(context.currentFileBudget)}")
+            appendLine("  recent edits: ${formatBudget(context.recentEditsBudget)}")
+            appendLine("  viewed snippets: ${formatBudget(context.viewedSnippetsBudget)}")
+            appendLine("  copied snippets: ${formatBudget(context.copiedSnippetsBudget)}")
+            appendLine()
+            appendLine("recently viewed snippets: ${context.viewedSnippets.size}")
+            context.viewedSnippets.forEachIndexed { index, snippet ->
+                appendLine("${index + 1}. ${snippet.filePath}:${snippet.startLine}-${snippet.endLine} (${snippet.charCount} chars)")
+            }
+            appendLine()
+            appendLine("recently copied snippets: ${context.copiedSnippets.size}")
+            context.copiedSnippets.forEachIndexed { index, snippet ->
                 appendLine("${index + 1}. ${snippet.filePath}:${snippet.startLine}-${snippet.endLine} (${snippet.charCount} chars)")
             }
         }
     }
+
+    private fun formatBudget(budget: ContextBudgetDebugInfo): String =
+        "${budget.usedChars}/${budget.budgetChars} chars " +
+            "(${budget.budgetTokens} token budget), " +
+            "kept ${budget.keptItems}, dropped ${budget.droppedItems}, dropped chars ${budget.droppedChars}"
 
     private fun formatRecentEdits(diffs: List<String>): String {
         if (diffs.isEmpty()) return "No recent edit diffs captured yet."
@@ -288,6 +309,23 @@ private class FreddieDebugPanel(
                 appendLine("### ${index + 1}")
                 append(diff)
                 if (!diff.endsWith("\n")) appendLine()
+            }
+        }
+    }
+
+    private fun formatCopiedSnippets(context: MercuryContextDebugInfo?): String {
+        if (context == null) return "No context captured yet."
+        if (context.copiedSnippets.isEmpty()) return "No copied snippets captured in the last request context."
+
+        return buildString {
+            appendLine("${context.copiedSnippets.size} copied snippet(s), oldest to newest in the prompt")
+            context.copiedSnippets.forEachIndexed { index, snippet ->
+                appendLine()
+                appendLine("### ${index + 1}")
+                appendLine("${snippet.filePath}:${snippet.startLine}-${snippet.endLine} (${snippet.charCount} chars)")
+                appendLine()
+                append(snippet.text)
+                if (!snippet.text.endsWith("\n")) appendLine()
             }
         }
     }

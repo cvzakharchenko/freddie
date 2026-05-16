@@ -6,7 +6,8 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 
 data class MercuryPromptContext(
-    val snippets: List<CodeSnippet>,
+    val viewedSnippets: List<CodeSnippet>,
+    val copiedSnippets: List<CodeSnippet>,
     val currentFilePath: String,
     val codeAboveEditableRegion: String,
     val editableBeforeCursor: String,
@@ -41,9 +42,14 @@ data class MercuryContextDebugInfo(
     val afterCursorCharCount: Int,
     val codeAboveCharCount: Int,
     val codeBelowCharCount: Int,
-    val snippets: List<MercurySnippetDebugInfo>,
+    val viewedSnippets: List<MercurySnippetDebugInfo>,
+    val copiedSnippets: List<MercurySnippetDebugInfo>,
     val editDiffCount: Int,
     val editDiffsOldestToNewest: List<String>,
+    val currentFileBudget: ContextBudgetDebugInfo,
+    val recentEditsBudget: ContextBudgetDebugInfo,
+    val viewedSnippetsBudget: ContextBudgetDebugInfo,
+    val copiedSnippetsBudget: ContextBudgetDebugInfo,
     val promptCharCount: Int,
     val codeToEditBlock: String,
 )
@@ -53,12 +59,14 @@ data class MercurySnippetDebugInfo(
     val startLine: Int,
     val endLine: Int,
     val charCount: Int,
+    val text: String,
 )
 
 class MercuryContextCollector(
     private val project: Project,
     private val recentEditHistory: RecentEditHistory,
     private val recentlyViewedSnippetTracker: RecentlyViewedSnippetTracker,
+    private val copiedSnippetTracker: CopiedSnippetTracker,
 ) {
     fun capture(editor: Editor): MercuryRequestSnapshot? {
         val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return null
@@ -67,17 +75,22 @@ class MercuryContextCollector(
         val caretOffset = editor.caretModel.offset.coerceIn(0, document.textLength)
         val editableRegion = EditableRegionSelector.select(document, caretOffset)
         val promptWindow = CurrentFilePromptWindow.from(document.text, editableRegion)
-        val snippets =
+        val snippetSelection =
             recentlyViewedSnippetTracker.snippetsFor(
                 currentEditor = editor,
                 currentFilePath = filePath,
                 editableStartLine = editableRegion.startLine,
                 editableEndLine = editableRegion.endLine,
             )
-        val editDiffs = recentEditHistory.formattedDiffs()
+        val viewedSnippets = snippetSelection.snippets
+        val copiedSnippetSelection = copiedSnippetTracker.snippetsWithinBudget()
+        val copiedSnippets = copiedSnippetSelection.snippets
+        val editSelection = recentEditHistory.formattedDiffsWithinBudget()
+        val editDiffs = editSelection.diffsOldestToNewest
         val context =
             MercuryPromptContext(
-                snippets = snippets,
+                viewedSnippets = viewedSnippets,
+                copiedSnippets = copiedSnippets,
                 currentFilePath = filePath,
                 codeAboveEditableRegion = promptWindow.codeAbove,
                 editableBeforeCursor = editableRegion.beforeCursor,
@@ -110,17 +123,32 @@ class MercuryContextCollector(
                     afterCursorCharCount = editableRegion.afterCursor.length,
                     codeAboveCharCount = promptWindow.codeAbove.length,
                     codeBelowCharCount = promptWindow.codeBelow.length,
-                    snippets =
-                        snippets.map {
+                    viewedSnippets =
+                        viewedSnippets.map {
                             MercurySnippetDebugInfo(
                                 filePath = it.filePath,
                                 startLine = it.startLine,
                                 endLine = it.endLine,
                                 charCount = it.text.length,
+                                text = it.text,
+                            )
+                        },
+                    copiedSnippets =
+                        copiedSnippets.map {
+                            MercurySnippetDebugInfo(
+                                filePath = it.filePath,
+                                startLine = it.startLine,
+                                endLine = it.endLine,
+                                charCount = it.text.length,
+                                text = it.text,
                             )
                         },
                     editDiffCount = editDiffs.size,
                     editDiffsOldestToNewest = editDiffs,
+                    currentFileBudget = promptWindow.budget,
+                    recentEditsBudget = editSelection.budget,
+                    viewedSnippetsBudget = snippetSelection.budget,
+                    copiedSnippetsBudget = copiedSnippetSelection.budget,
                     promptCharCount = prompt.length,
                     codeToEditBlock = editableRegion.beforeCursor + "<|cursor|>" + editableRegion.afterCursor,
                 ),
@@ -131,40 +159,86 @@ class MercuryContextCollector(
 private data class CurrentFilePromptWindow(
     val codeAbove: String,
     val codeBelow: String,
+    val budget: ContextBudgetDebugInfo,
 ) {
     companion object {
-        private const val SMALL_FILE_CHAR_LIMIT = 200_000
-        private const val SURROUNDING_LINE_LIMIT = 150
+        private const val ABOVE_CONTEXT_PERCENT = 60
 
         fun from(
             documentText: String,
             editableRegion: EditableRegion,
+            budgetChars: Int = ContextBudget.CURRENT_FILE_CHARS,
+            budgetTokens: Int = ContextBudget.CURRENT_FILE_TOKENS,
         ): CurrentFilePromptWindow {
-            if (documentText.length <= SMALL_FILE_CHAR_LIMIT) {
-                return CurrentFilePromptWindow(
-                    codeAbove = documentText.substring(0, editableRegion.startOffset),
-                    codeBelow = documentText.substring(editableRegion.endOffset),
-                )
-            }
-
             val before = documentText.substring(0, editableRegion.startOffset)
             val after = documentText.substring(editableRegion.endOffset)
+            val surrounding = surroundingText(before, after, budgetChars)
             return CurrentFilePromptWindow(
-                codeAbove = before.split('\n').takeLast(SURROUNDING_LINE_LIMIT).joinToString("\n").withOriginalTrailingNewline(before),
-                codeBelow = after.split('\n').take(SURROUNDING_LINE_LIMIT).joinToString("\n").withOriginalTrailingNewline(after),
+                codeAbove = surrounding.above,
+                codeBelow = surrounding.below,
+                budget =
+                    ContextBudgetDebugInfo(
+                        budgetTokens = budgetTokens,
+                        budgetChars = budgetChars,
+                        usedChars = surrounding.above.length + surrounding.below.length,
+                        droppedChars = before.length + after.length - surrounding.above.length - surrounding.below.length,
+                        keptItems = listOf(surrounding.above, surrounding.below).count { it.isNotEmpty() },
+                        droppedItems = if (before.length + after.length > surrounding.above.length + surrounding.below.length) 1 else 0,
+                    ),
             )
         }
 
-        private fun String.withOriginalTrailingNewline(original: String): String =
-            if (isNotEmpty() && original.endsWith("\n") && !endsWith("\n")) "$this\n" else this
+        private fun surroundingText(
+            before: String,
+            after: String,
+            budgetChars: Int,
+        ): SurroundingText {
+            if (budgetChars <= 0) return SurroundingText(above = "", below = "")
+            if (before.length + after.length <= budgetChars) return SurroundingText(above = before, below = after)
+
+            var aboveBudget = minOf(before.length, budgetChars * ABOVE_CONTEXT_PERCENT / 100)
+            var belowBudget = minOf(after.length, budgetChars - aboveBudget)
+            val remainingBudget = budgetChars - aboveBudget - belowBudget
+            if (remainingBudget > 0) {
+                val extraAbove = minOf(before.length - aboveBudget, remainingBudget)
+                aboveBudget += extraAbove
+                belowBudget += minOf(after.length - belowBudget, remainingBudget - extraAbove)
+            }
+
+            return SurroundingText(
+                above = before.takeLastAtLineBoundary(aboveBudget),
+                below = after.takeAtLineBoundary(belowBudget),
+            )
+        }
+
+        private fun String.takeLastAtLineBoundary(maxChars: Int): String {
+            if (length <= maxChars) return this
+            if (maxChars <= 0) return ""
+            val rawStart = length - maxChars
+            val newline = indexOf('\n', rawStart)
+            return if (newline >= 0 && newline + 1 < length) substring(newline + 1) else takeLast(maxChars)
+        }
+
+        private fun String.takeAtLineBoundary(maxChars: Int): String {
+            if (length <= maxChars) return this
+            if (maxChars <= 0) return ""
+            val rawEnd = maxChars.coerceAtMost(length)
+            val newline = lastIndexOf('\n', rawEnd - 1)
+            return if (newline >= 0) substring(0, newline + 1) else take(maxChars)
+        }
     }
 }
+
+private data class SurroundingText(
+    val above: String,
+    val below: String,
+)
 
 object MercuryPromptBuilder {
     fun build(context: MercuryPromptContext): String =
         buildString {
             appendLine("<|recently_viewed_code_snippets|>")
-            for (snippet in context.snippets) {
+            for (snippet in context.viewedSnippets + context.copiedSnippets) {
                 appendLine("<|recently_viewed_code_snippet|>")
                 append("code_snippet_file_path: ")
                 appendLine(snippet.filePath)

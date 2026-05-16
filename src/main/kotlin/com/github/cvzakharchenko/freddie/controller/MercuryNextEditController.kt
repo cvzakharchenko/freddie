@@ -6,6 +6,7 @@ import com.github.cvzakharchenko.freddie.context.MercuryContextCollector
 import com.github.cvzakharchenko.freddie.context.MercuryRequestSnapshot
 import com.github.cvzakharchenko.freddie.context.RecentEditHistory
 import com.github.cvzakharchenko.freddie.context.RecentlyViewedSnippetTracker
+import com.github.cvzakharchenko.freddie.context.CopiedSnippetTracker
 import com.github.cvzakharchenko.freddie.context.projectRelativePath
 import com.github.cvzakharchenko.freddie.debug.FreddieDebugStateService
 import com.github.cvzakharchenko.freddie.mercury.MercuryApiException
@@ -79,7 +80,8 @@ class MercuryNextEditController(
 
     private val recentEditHistory = RecentEditHistory()
     private val recentlyViewedSnippetTracker = RecentlyViewedSnippetTracker(project)
-    private val contextCollector = MercuryContextCollector(project, recentEditHistory, recentlyViewedSnippetTracker)
+    private val copiedSnippetTracker = project.service<CopiedSnippetTracker>()
+    private val contextCollector = MercuryContextCollector(project, recentEditHistory, recentlyViewedSnippetTracker, copiedSnippetTracker)
     private val triggerPolicy = MercuryTriggerPolicy(project)
     private val debugState = project.service<FreddieDebugStateService>()
     private val presenter = LineGhostTextPresenter()
@@ -591,7 +593,7 @@ class MercuryNextEditController(
         newText: String,
     ) {
         recentEditHistory.recordEdit(filePath, oldText, newText)
-        debugState.recordRecentEditDiffs(recentEditHistory.formattedDiffs())
+        debugState.recordRecentEditDiffs(recentEditHistory.formattedDiffsWithinBudget().diffsOldestToNewest)
     }
 
     private fun handleRequestError(

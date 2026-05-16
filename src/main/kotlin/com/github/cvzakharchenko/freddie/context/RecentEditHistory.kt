@@ -23,8 +23,10 @@ class RecentEditHistory {
         if (originalText == newText) return
 
         val candidate = RecentEdit(filePath, originalText, newText)
-        val diff = candidate.formattedDiff ?: return
-        if (diff.length > MAX_DIFF_CHARS || changedLineCount(diff) > MAX_CHANGED_LINES) return
+        if (!keepEdit(candidate)) {
+            dropOverlappingEdits(candidate)
+            return
+        }
 
         val previousIndex = edits.indexOfLast { it.canCoalesceWith(candidate) }
         if (previousIndex >= 0) {
@@ -35,10 +37,7 @@ class RecentEditHistory {
             when {
                 patchedNewText == null -> edits.add(candidate)
                 patchedNewText == previous.originalText -> Unit
-                else -> {
-                    val combined = RecentEdit(filePath, previous.originalText, patchedNewText)
-                    edits.add(if (keepEdit(combined)) combined else candidate)
-                }
+                else -> addMergedOrSplit(previous, candidate, patchedNewText)
             }
             trimOldestEdits()
             return
@@ -48,12 +47,71 @@ class RecentEditHistory {
         trimOldestEdits()
     }
 
-    fun formattedDiffs(): List<String> = edits.mapNotNull { it.formattedDiff }
+    fun formattedDiffs(): List<String> =
+        formattedDiffsWithinBudget(Int.MAX_VALUE, Int.MAX_VALUE).diffsOldestToNewest
+
+    fun formattedDiffsWithinBudget(
+        budgetChars: Int = ContextBudget.RECENT_EDITS_CHARS,
+        budgetTokens: Int = ContextBudget.RECENT_EDITS_TOKENS,
+    ): RecentEditSelection {
+        var usedChars = 0
+        var droppedItems = 0
+        var droppedChars = 0
+        val keptNewestToOldest = mutableListOf<String>()
+
+        for (edit in edits.asReversed()) {
+            val diff = edit.formattedDiff ?: continue
+            val cost = diff.length
+            if (cost > budgetChars - usedChars) {
+                droppedItems++
+                droppedChars += cost
+                continue
+            }
+
+            keptNewestToOldest.add(diff)
+            usedChars += cost
+        }
+
+        return RecentEditSelection(
+            diffsOldestToNewest = keptNewestToOldest.asReversed(),
+            budget =
+                ContextBudgetDebugInfo(
+                    budgetTokens = budgetTokens,
+                    budgetChars = budgetChars,
+                    usedChars = usedChars,
+                    droppedChars = droppedChars,
+                    keptItems = keptNewestToOldest.size,
+                    droppedItems = droppedItems,
+                ),
+        )
+    }
 
     private fun RecentEdit.canCoalesceWith(candidate: RecentEdit): Boolean {
         if (filePath != candidate.filePath) return false
         if (changedLines.newRange.lineGapTo(candidate.changedLines.oldRange) > MAX_COALESCE_GAP_LINES) return false
         return canApply(candidate)
+    }
+
+    private fun dropOverlappingEdits(candidate: RecentEdit) {
+        edits.removeAll {
+            it.filePath == candidate.filePath &&
+                it.changedLines.newRange.lineGapTo(candidate.changedLines.oldRange) <= MAX_COALESCE_GAP_LINES
+        }
+    }
+
+    private fun addMergedOrSplit(
+        previous: RecentEdit,
+        candidate: RecentEdit,
+        patchedNewText: String,
+    ) {
+        val combined = RecentEdit(previous.filePath, previous.originalText, patchedNewText)
+        if (keepEdit(combined)) {
+            edits.add(combined)
+            return
+        }
+
+        edits.add(previous)
+        edits.add(candidate)
     }
 
     private fun RecentEdit.canApply(candidate: RecentEdit): Boolean {
@@ -107,6 +165,11 @@ class RecentEditHistory {
         private const val MAX_COALESCE_GAP_LINES = 5
     }
 }
+
+data class RecentEditSelection(
+    val diffsOldestToNewest: List<String>,
+    val budget: ContextBudgetDebugInfo,
+)
 
 private data class ChangedLineRanges(
     val oldRange: LineRange,

@@ -5,6 +5,7 @@
     <vendor>cvzakharchenko</vendor>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
@@ -14,6 +15,7 @@
                     factoryClass="com.github.cvzakharchenko.freddie.debug.FreddieDebugToolWindowFactory"/>
         <postStartupActivity implementation="com.github.cvzakharchenko.freddie.startup.FreddieProjectActivity" />
         <applicationService serviceImplementation="com.github.cvzakharchenko.freddie.actions.MercuryInlineCompletionActionBridgeService" />
+        <copyPastePreProcessor implementation="com.github.cvzakharchenko.freddie.context.FreddieCopyPastePreProcessor"/>
         <applicationConfigurable
                 parentId="tools"
                 displayName="Freddie"

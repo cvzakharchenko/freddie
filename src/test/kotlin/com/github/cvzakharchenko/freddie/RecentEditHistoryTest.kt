@@ -156,4 +156,131 @@ class RecentEditHistoryTest {
         assertTrue(diffs[1].contains("-int second = 1;"))
         assertTrue(diffs[1].contains("+int second = 2;"))
     }
+
+    @Test
+    fun `splits a 25 line local editing session into small locations`() {
+        val history = RecentEditHistory()
+        val states = capitalizationSessionStates()
+
+        states.zipWithNext().forEach { (oldText, newText) ->
+            history.recordEdit("authentication.cpp", oldText, newText)
+        }
+
+        val diffs = history.formattedDiffs()
+        val combinedDiffText = diffs.joinToString("\n")
+        assertEquals(2, diffs.size)
+        assertTrue(combinedDiffText.contains("-    return \"commit hashes mismatch\";"))
+        assertTrue(combinedDiffText.contains("+    return \"Commit hashes mismatch\";"))
+        assertTrue(combinedDiffText.contains("-    return \"prefab hashes mismatch\";"))
+        assertTrue(combinedDiffText.contains("+    return \"Prefab hashes mismatch\";"))
+        assertTrue(combinedDiffText.contains("-    return \"unknown\";"))
+        assertTrue(combinedDiffText.contains("+    return \"Unknown\";"))
+    }
+
+    @Test
+    fun `removes a local editing session when the whole block is reverted`() {
+        val history = RecentEditHistory()
+        val states = capitalizationSessionStates()
+
+        states.zipWithNext().forEach { (oldText, newText) ->
+            history.recordEdit("authentication.cpp", oldText, newText)
+        }
+        history.recordEdit("authentication.cpp", states.last(), states.first())
+
+        assertTrue(history.formattedDiffs().isEmpty())
+    }
+
+    @Test
+    fun `removes a local editing session when lines are reverted one by one`() {
+        val history = RecentEditHistory()
+        val states = capitalizationSessionStates()
+
+        states.zipWithNext().forEach { (oldText, newText) ->
+            history.recordEdit("authentication.cpp", oldText, newText)
+        }
+        states.asReversed().zipWithNext().forEach { (oldText, newText) ->
+            history.recordEdit("authentication.cpp", oldText, newText)
+        }
+
+        assertTrue(history.formattedDiffs().isEmpty())
+    }
+
+    @Test
+    fun `budgeted diffs skip newest edits that do not fit and keep older edits that fit`() {
+        val history = RecentEditHistory()
+
+        history.recordEdit("a.kt", "fun first() = 1\n", "fun first() = 2\n")
+        history.recordEdit(
+            "b.kt",
+            "fun second() = \"${"x".repeat(200)}\"\n",
+            "fun second() = \"${"y".repeat(200)}\"\n",
+        )
+
+        val allDiffs = history.formattedDiffs()
+        val selection =
+            history.formattedDiffsWithinBudget(
+                budgetChars = allDiffs.first().length,
+                budgetTokens = allDiffs.first().length / 4,
+            )
+
+        assertEquals(listOf(allDiffs.first()), selection.diffsOldestToNewest)
+        assertEquals(1, selection.budget.keptItems)
+        assertEquals(1, selection.budget.droppedItems)
+    }
+
+    private fun capitalizationSessionStates(): List<String> {
+        val replacements =
+            listOf(
+                "ok" to "Ok",
+                "commit hashes mismatch" to "Commit hashes mismatch",
+                "replication schemes hashes mismatch" to "Replication schemes hashes mismatch",
+                "input registry hashes mismatch" to "Input registry hashes mismatch",
+                "message bus registry hashes mismatch" to "Message bus registry hashes mismatch",
+                "predefined replicables registry hashes mismatch" to "Predefined replicables registry hashes mismatch",
+                "prefab hashes mismatch" to "Prefab hashes mismatch",
+                "timeout" to "Timeout",
+                "wrong challenge response" to "Wrong challenge response",
+                "player is absent on server" to "Player is absent on server",
+                "server received suspicious message" to "Server received suspicious message",
+                "kicked by server" to "Kicked by server",
+                "unknown" to "Unknown",
+            )
+        return buildList {
+            var text = authenticationStatusSwitchText()
+            add(text)
+            for ((oldValue, newValue) in replacements) {
+                text = text.replace("return \"$oldValue\";", "return \"$newValue\";")
+                add(text)
+            }
+        }
+    }
+
+    private fun authenticationStatusSwitchText(): String =
+        """
+                    return "ok";
+                case AuthStatus::WarningCommitHash:
+                    return "commit hashes mismatch";
+                case AuthStatus::ErrorReplicationHash:
+                    return "replication schemes hashes mismatch";
+                case AuthStatus::ErrorInputHash:
+                    return "input registry hashes mismatch";
+                case AuthStatus::ErrorMessageBusHash:
+                    return "message bus registry hashes mismatch";
+                case AuthStatus::ErrorPredefinedReplicablesHash:
+                    return "predefined replicables registry hashes mismatch";
+                case AuthStatus::ErrorPrefabHash:
+                    return "prefab hashes mismatch";
+                case AuthStatus::ErrorTimeout:
+                    return "timeout";
+                case AuthStatus::ErrorWrongResponse:
+                    return "wrong challenge response";
+                case AuthStatus::ErrorAbsentPlayer:
+                    return "player is absent on server";
+                case AuthStatus::ErrorSuspiciousMessage:
+                    return "server received suspicious message";
+                case AuthStatus::ErrorKicked:
+                    return "kicked by server";
+                default:
+                    return "unknown";
+        """.trimIndent()
 }

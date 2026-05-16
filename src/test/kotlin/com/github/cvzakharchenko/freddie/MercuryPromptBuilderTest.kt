@@ -12,7 +12,7 @@ class MercuryPromptBuilderTest {
         val prompt =
             MercuryPromptBuilder.build(
                 MercuryPromptContext(
-                    snippets =
+                    viewedSnippets =
                         listOf(
                             CodeSnippet(
                                 filePath = "src/main/kotlin/Foo.kt",
@@ -20,6 +20,16 @@ class MercuryPromptBuilderTest {
                                 endLine = 12,
                                 text = "fun helper() = 42",
                                 timestamp = 1L,
+                            ),
+                        ),
+                    copiedSnippets =
+                        listOf(
+                            CodeSnippet(
+                                filePath = "src/main/kotlin/Copied.kt",
+                                startLine = 3,
+                                endLine = 4,
+                                text = "fun copied() = true",
+                                timestamp = 2L,
                             ),
                         ),
                     currentFilePath = "src/main/kotlin/App.kt",
@@ -34,6 +44,8 @@ class MercuryPromptBuilderTest {
         assertTrue(prompt.contains("<|recently_viewed_code_snippets|>"))
         assertTrue(prompt.contains("<|recently_viewed_code_snippet|>"))
         assertTrue(prompt.contains("code_snippet_file_path: src/main/kotlin/Foo.kt"))
+        assertTrue(prompt.contains("code_snippet_file_path: src/main/kotlin/Copied.kt"))
+        assertTrue(prompt.indexOf("code_snippet_file_path: src/main/kotlin/Foo.kt") < prompt.indexOf("code_snippet_file_path: src/main/kotlin/Copied.kt"))
         assertTrue(prompt.contains("<|current_file_content|>"))
         assertTrue(prompt.contains("current_file_path: src/main/kotlin/App.kt"))
         assertTrue(prompt.contains("pri<|cursor|>"))
@@ -46,7 +58,8 @@ class MercuryPromptBuilderTest {
         val prompt =
             MercuryPromptBuilder.build(
                 MercuryPromptContext(
-                    snippets = emptyList(),
+                    viewedSnippets = emptyList(),
+                    copiedSnippets = emptyList(),
                     currentFilePath = "Only.kt",
                     codeAboveEditableRegion = "",
                     editableBeforeCursor = "",

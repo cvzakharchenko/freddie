@@ -12,14 +12,6 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-data class CodeSnippet(
-    val filePath: String,
-    val startLine: Int,
-    val endLine: Int,
-    val text: String,
-    val timestamp: Long,
-)
-
 class RecentlyViewedSnippetTracker(
     private val project: Project,
 ) {
@@ -49,7 +41,9 @@ class RecentlyViewedSnippetTracker(
         currentFilePath: String,
         editableStartLine: Int,
         editableEndLine: Int,
-    ): List<CodeSnippet> {
+        budgetChars: Int = ContextBudget.RECENT_SNIPPETS_CHARS,
+        budgetTokens: Int = ContextBudget.RECENT_SNIPPETS_TOKENS,
+    ): SnippetSelection {
         val snippets = mutableListOf<CodeSnippet>()
 
         viewedLocations
@@ -60,13 +54,38 @@ class RecentlyViewedSnippetTracker(
         selectedSplitSnippets(currentEditor).forEach { snippets.add(it) }
 
         val seen = mutableSetOf<Pair<String, Int>>()
-        return snippets
+        var usedChars = 0
+        var droppedChars = 0
+        var droppedItems = 0
+        val keptNewestToOldest = mutableListOf<CodeSnippet>()
+
+        snippets
             .asSequence()
             .filterNot { it.filePath == currentFilePath && rangesOverlap(it.startLine - 1, it.endLine - 1, editableStartLine, editableEndLine) }
             .filter { seen.add(it.filePath to it.startLine) }
-            .take(MAX_SNIPPETS)
-            .toList()
-            .sortedBy { it.timestamp }
+            .forEach { snippet ->
+                val cost = snippet.promptCharCost()
+                if (keptNewestToOldest.size >= MAX_SNIPPETS || cost > budgetChars - usedChars) {
+                    droppedItems++
+                    droppedChars += cost
+                } else {
+                    keptNewestToOldest.add(snippet)
+                    usedChars += cost
+                }
+            }
+
+        return SnippetSelection(
+            snippets = keptNewestToOldest.sortedBy { it.timestamp },
+            budget =
+                ContextBudgetDebugInfo(
+                    budgetTokens = budgetTokens,
+                    budgetChars = budgetChars,
+                    usedChars = usedChars,
+                    droppedChars = droppedChars,
+                    keptItems = keptNewestToOldest.size,
+                    droppedItems = droppedItems,
+                ),
+        )
     }
 
     private fun selectedSplitSnippets(currentEditor: Editor): List<CodeSnippet> {
