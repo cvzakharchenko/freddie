@@ -69,6 +69,21 @@ class PartialSuggestionAcceptanceTest {
     }
 
     @Test
+    fun `word accept inserts a contiguous symbol group`() {
+        val result =
+            requireNotNull(
+                PartialSuggestionAcceptance.accept(
+                    currentText = "one\nreturn function\n",
+                    replacementText = "one\nreturn function))))\n",
+                    kind = PartialAcceptKind.WORD,
+                ),
+            )
+
+        assertEquals("one\nreturn function))))\n", result.text)
+        assertTrue(result.completed)
+    }
+
+    @Test
     fun `partial accept preserves CRLF line endings`() {
         val result =
             requireNotNull(

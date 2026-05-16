@@ -507,7 +507,7 @@ class MercuryNextEditController(
         recordPreviewResult(
             message =
                 if (visible) {
-                    "${source.label} ghost text is visible"
+                    "${source.label} preview is visible"
                 } else {
                     "${source.label} was not rendered because the changed block was empty"
                 },

@@ -2,6 +2,7 @@ package com.github.cvzakharchenko.freddie.controller
 
 import com.github.cvzakharchenko.freddie.context.LineEndingNormalizer
 import com.github.cvzakharchenko.freddie.presentation.ChangedBlock
+import com.github.cvzakharchenko.freddie.presentation.SuggestionTextTokenizer
 
 internal enum class PartialAcceptKind {
     WORD,
@@ -94,14 +95,7 @@ internal object PartialSuggestionAcceptance {
         }
         if (index >= replacementLine.length) return replacementLine
 
-        if (replacementLine[index].isWordPart()) {
-            while (index < replacementLine.length && replacementLine[index].isWordPart()) {
-                index++
-            }
-        } else {
-            index++
-        }
-        return replacementLine.substring(0, index)
+        return replacementLine.substring(0, SuggestionTextTokenizer.nextTokenEnd(replacementLine, index))
     }
 
     private fun commonPrefixLength(
@@ -115,8 +109,6 @@ internal object PartialSuggestionAcceptance {
         }
         return index
     }
-
-    private fun Char.isWordPart(): Boolean = isLetterOrDigit() || this == '_'
 
     private fun lineInfos(text: String): List<LineInfo> {
         if (text.isEmpty()) return emptyList()
