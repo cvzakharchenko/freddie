@@ -11,6 +11,7 @@ import com.github.cvzakharchenko.freddie.debug.FreddieDebugStateService
 import com.github.cvzakharchenko.freddie.mercury.MercuryApiException
 import com.github.cvzakharchenko.freddie.mercury.MercuryClient
 import com.github.cvzakharchenko.freddie.mercury.MercuryCompletion
+import com.github.cvzakharchenko.freddie.presentation.ChangedBlock
 import com.github.cvzakharchenko.freddie.presentation.LineGhostTextPresenter
 import com.github.cvzakharchenko.freddie.presentation.MercurySuggestion
 import com.github.cvzakharchenko.freddie.presentation.PresentedSuggestion
@@ -68,6 +69,14 @@ class MercuryNextEditController(
         var lastEditor: Editor? = null,
     )
 
+    private enum class PreviewSource(
+        val label: String,
+        val debug: Boolean,
+    ) {
+        MERCURY(label = "Suggestion", debug = false),
+        DEBUG_EDIT(label = "Debug preview", debug = true),
+    }
+
     private val recentEditHistory = RecentEditHistory()
     private val recentlyViewedSnippetTracker = RecentlyViewedSnippetTracker(project)
     private val contextCollector = MercuryContextCollector(project, recentEditHistory, recentlyViewedSnippetTracker)
@@ -83,6 +92,7 @@ class MercuryNextEditController(
     private var started = false
     private var currentTask: Future<*>? = null
     private var currentPresentedSuggestion: PresentedSuggestion? = null
+    private var lastPreviewSnapshot: MercuryRequestSnapshot? = null
     private var suppressDocumentTriggers = false
 
     fun start() {
@@ -127,7 +137,6 @@ class MercuryNextEditController(
         }
 
         typedRequestAlarm.cancelAllRequests()
-        clearVisibleSuggestion()
 
         if (!FreddieSettings.getInstance().nextEditEnabled) {
             debugState.recordRequestSkipped(triggerKind, "next edit prediction is disabled")
@@ -157,7 +166,8 @@ class MercuryNextEditController(
         }
 
         val requestId = requestSerial.incrementAndGet()
-        debugState.recordRequestStarted(triggerKind, requestId, snapshot)
+        lastPreviewSnapshot = snapshot
+        debugState.recordRequestStarted(triggerKind, requestId, snapshot, visibleSuggestion = currentPresentedSuggestion != null)
         currentTask?.cancel(true)
         currentTask =
             ApplicationManager.getApplication().executeOnPooledThread {
@@ -182,6 +192,48 @@ class MercuryNextEditController(
     }
 
     fun acceptCurrentSuggestion(): Boolean {
+        return acceptSuggestionReplacement(
+            newTextProvider = { suggestion -> PartialAcceptResult(suggestion.replacementText, completed = true) },
+            commandName = "Accept Mercury Next Edit",
+            acceptedMessage = "Suggestion accepted",
+            completedMessage = "Suggestion accepted",
+        )
+    }
+
+    fun acceptNextSuggestionWord(): Boolean =
+        acceptSuggestionReplacement(
+            newTextProvider = { suggestion ->
+                PartialSuggestionAcceptance.accept(
+                    currentText = suggestion.originalText,
+                    replacementText = suggestion.replacementText,
+                    kind = PartialAcceptKind.WORD,
+                )
+            },
+            commandName = "Accept Mercury Next Edit Word",
+            acceptedMessage = "Suggestion word accepted",
+            completedMessage = "Suggestion completed by accepting a word",
+        )
+
+    fun acceptNextSuggestionLine(): Boolean =
+        acceptSuggestionReplacement(
+            newTextProvider = { suggestion ->
+                PartialSuggestionAcceptance.accept(
+                    currentText = suggestion.originalText,
+                    replacementText = suggestion.replacementText,
+                    kind = PartialAcceptKind.LINE,
+                )
+            },
+            commandName = "Accept Mercury Next Edit Line",
+            acceptedMessage = "Suggestion line accepted",
+            completedMessage = "Suggestion completed by accepting a line",
+        )
+
+    private fun acceptSuggestionReplacement(
+        newTextProvider: (MercurySuggestion) -> PartialAcceptResult?,
+        commandName: String,
+        acceptedMessage: String,
+        completedMessage: String,
+    ): Boolean {
         val presented = currentPresentedSuggestion ?: return false
         val suggestion = presented.suggestion
         val regionCheck = resolveSuggestionRegion(suggestion)
@@ -193,30 +245,33 @@ class MercuryNextEditController(
         }
         val resolvedRegion = requireNotNull(regionCheck.region)
         resolvedRegion.note?.let { debugState.recordEvent("Accepting relocated suggestion: $it") }
+        val accepted = newTextProvider(suggestion)
+        if (accepted == null || accepted.text == suggestion.originalText) {
+            debugState.recordSuggestionResult("Suggestion was not accepted: no partial change is available", visibleSuggestion = true)
+            return false
+        }
 
         val beforeText = suggestion.document.text
-        val originalCaretOffsetInRegion = suggestion.caretOffset - suggestion.startOffset
+        val currentCaretOffset = suggestion.editor.caretModel.offset
         suppressDocumentTriggers = true
         try {
             WriteCommandAction.runWriteCommandAction(
                 project,
-                "Accept Mercury Next Edit",
+                commandName,
                 null,
                 Runnable {
                     suggestion.document.replaceString(
                         resolvedRegion.startOffset,
                         resolvedRegion.endOffset,
-                        suggestion.replacementText,
+                        accepted.text,
                     )
-                    val newCaretOffset = (
-                        resolvedRegion.startOffset +
-                            SuggestionCaretMapper.mapCaretOffset(
-                                originalText = suggestion.originalText,
-                                replacementText = suggestion.replacementText,
-                                caretOffsetInOriginal = originalCaretOffsetInRegion,
-                            )
-                    )
-                        .coerceIn(0, suggestion.document.textLength)
+                    val newCaretOffset =
+                        mapCaretAfterReplacement(
+                            caretOffset = currentCaretOffset,
+                            region = resolvedRegion,
+                            originalText = suggestion.originalText,
+                            replacementText = accepted.text,
+                        ).coerceIn(0, suggestion.document.textLength)
                     suggestion.editor.caretModel.moveToOffset(newCaretOffset)
                 },
             )
@@ -227,8 +282,20 @@ class MercuryNextEditController(
         trackingFor(suggestion.document).lastText = suggestion.document.text
         recentEditHistory.recordEdit(suggestion.filePath, beforeText, suggestion.document.text)
         invalidatePendingRequests()
-        clearVisibleSuggestion()
-        debugState.recordSuggestionResult("Suggestion accepted", visibleSuggestion = false)
+        if (accepted.completed) {
+            clearVisibleSuggestion()
+            debugState.recordSuggestionResult(completedMessage, visibleSuggestion = false)
+        } else {
+            val updatedSuggestion =
+                suggestion.copy(
+                    modificationStamp = suggestion.document.modificationStamp,
+                    endOffset = resolvedRegion.startOffset + accepted.text.length,
+                    originalText = accepted.text,
+                    caretOffset = suggestion.editor.caretModel.offset,
+                )
+            currentPresentedSuggestion = presenter.show(updatedSuggestion)
+            debugState.recordSuggestionResult(acceptedMessage, visibleSuggestion = currentPresentedSuggestion != null)
+        }
         return beforeText != suggestion.document.text
     }
 
@@ -241,6 +308,31 @@ class MercuryNextEditController(
     }
 
     fun hasVisibleSuggestion(): Boolean = currentPresentedSuggestion != null
+
+    fun previewEditedChoiceText(choiceText: String): Boolean {
+        val snapshot = lastPreviewSnapshot
+        if (snapshot == null) {
+            clearVisibleSuggestion()
+            debugState.recordDebugPreviewResult("Debug preview skipped: no request snapshot is available", visibleSuggestion = false)
+            return false
+        }
+        if (choiceText.isEmpty()) {
+            clearVisibleSuggestion()
+            debugState.recordDebugPreviewResult("Debug preview cleared: choice text is empty", visibleSuggestion = false)
+            return false
+        }
+        val replacementText = MercuryClient.cleanNextEditOutput(choiceText)
+        if (replacementText == null) {
+            clearVisibleSuggestion()
+            debugState.recordDebugPreviewResult("Debug preview cleared: choice text is None", visibleSuggestion = false)
+            return false
+        }
+        return showReplacementFromSnapshot(
+            snapshot = snapshot,
+            rawReplacementText = replacementText,
+            source = PreviewSource.DEBUG_EDIT,
+        )
+    }
 
     private fun attachEditor(editor: Editor) {
         if (project.isDisposed || editor.isDisposed || editor.project != project) return
@@ -259,9 +351,7 @@ class MercuryNextEditController(
                 override fun caretPositionChanged(event: CaretEvent) {
                     tracking.lastEditor = editor
                     recordEditorVisit(editor)
-                    invalidateActiveRequest()
-                    clearVisibleSuggestion()
-                    debugState.recordEvent("Caret moved; active request and preview cleared")
+                    debugState.recordEvent("Caret moved; visible suggestion kept")
                 }
             },
             disposable,
@@ -295,13 +385,15 @@ class MercuryNextEditController(
 
         if (suppressDocumentTriggers) return
 
+        recordUserEdit(event.document, oldText, newText)
+
+        if (tryAdvanceVisibleSuggestion(oldText, newText, event)) {
+            invalidatePendingRequests()
+            return
+        }
+
         invalidatePendingRequests()
         clearVisibleSuggestion()
-
-        val file = FileDocumentManager.getInstance().getFile(event.document)
-        if (file != null) {
-            recentEditHistory.recordEdit(projectRelativePath(project, file), oldText, newText)
-        }
 
         val editor = tracking.lastEditor?.takeUnless { it.isDisposed } ?: editorFor(event.document) ?: return
         tracking.lastEditor = editor
@@ -334,16 +426,28 @@ class MercuryNextEditController(
 
         val rawReplacementText = completion.replacementText
         if (rawReplacementText == null) {
-            debugState.recordSuggestionResult("Mercury returned None or no choice content", visibleSuggestion = false)
+            debugState.recordSuggestionResult("Mercury returned None or no choice content", visibleSuggestion = currentPresentedSuggestion != null)
             return
         }
+        showReplacementFromSnapshot(
+            snapshot = snapshot,
+            rawReplacementText = rawReplacementText,
+            source = PreviewSource.MERCURY,
+        )
+    }
+
+    private fun showReplacementFromSnapshot(
+        snapshot: MercuryRequestSnapshot,
+        rawReplacementText: String,
+        source: PreviewSource,
+    ): Boolean {
+        clearVisibleSuggestion()
         val preparedReplacement =
             LineEndingNormalizer.prepareReplacementForEditableRegion(
                 mercuryReplacement = rawReplacementText,
                 originalEditableRegion = snapshot.editableRegion.originalText,
                 documentText = snapshot.document.text,
             )
-        val replacementText = preparedReplacement.applicationText
         if (preparedReplacement.changedLineEndings) {
             debugState.recordEvent("Normalized Mercury replacement line endings to ${describeLineSeparator(preparedReplacement.targetLineSeparator)}")
         }
@@ -353,15 +457,32 @@ class MercuryNextEditController(
         if (preparedReplacement.changedTrailingLineEnding) {
             debugState.recordEvent("Adjusted Mercury replacement trailing line ending to match the editable region")
         }
+        val filteredReplacement =
+            ChangedBlock.dropLastLineTouchingBlocks(
+                original = snapshot.editableRegion.originalText,
+                replacement = preparedReplacement.applicationText,
+            )
+        if (filteredReplacement.droppedBlockCount > 0) {
+            debugState.recordEvent("Dropped ${filteredReplacement.droppedBlockCount} suggestion block(s) touching the editable region boundary")
+        }
+        if (filteredReplacement.droppedBlockCount > 0 && filteredReplacement.keptBlockCount == 0) {
+            recordPreviewResult("${source.label} discarded: only boundary-touching blocks remained", visibleSuggestion = false, source = source)
+            return false
+        }
+        val replacementText =
+            LineEndingNormalizer.convertLfToLineSeparator(
+                filteredReplacement.text,
+                preparedReplacement.targetLineSeparator,
+            )
         if (replacementText == snapshot.editableRegion.originalText) {
-            debugState.recordSuggestionResult("Mercury replacement matched the editable region exactly", visibleSuggestion = false)
-            return
+            recordPreviewResult("${source.label} matched the editable region exactly", visibleSuggestion = false, source = source)
+            return false
         }
 
         val regionCheck = resolveSnapshotRegion(snapshot)
         if (regionCheck.discardReason != null) {
-            debugState.recordSuggestionResult("Mercury response discarded: ${regionCheck.discardReason}", visibleSuggestion = false)
-            return
+            recordPreviewResult("${source.label} discarded: ${regionCheck.discardReason}", visibleSuggestion = false, source = source)
+            return false
         }
         val resolvedRegion = requireNotNull(regionCheck.region)
         resolvedRegion.note?.let { debugState.recordEvent("Using relocated editable region: $it") }
@@ -379,16 +500,107 @@ class MercuryNextEditController(
                 replacementText = replacementText,
             )
         currentPresentedSuggestion = presenter.show(suggestion)
+        val visible = currentPresentedSuggestion != null
+        recordPreviewResult(
+            message =
+                if (visible) {
+                    "${source.label} ghost text is visible"
+                } else {
+                    "${source.label} was not rendered because the changed block was empty"
+                },
+            visibleSuggestion = visible,
+            source = source,
+        )
+        return visible
+    }
+
+    private fun recordPreviewResult(
+        message: String,
+        visibleSuggestion: Boolean,
+        source: PreviewSource,
+    ) {
+        if (source.debug) {
+            debugState.recordDebugPreviewResult(message, visibleSuggestion)
+        } else {
+            debugState.recordSuggestionResult(message, visibleSuggestion)
+        }
+    }
+
+    private fun tryAdvanceVisibleSuggestion(
+        oldDocumentText: String,
+        newDocumentText: String,
+        event: DocumentEvent,
+    ): Boolean {
+        val presented = currentPresentedSuggestion ?: return false
+        val suggestion = presented.suggestion
+        if (suggestion.document != event.document || suggestion.editor.isDisposed) return false
+
+        val update =
+            StickySuggestionUpdater.advance(
+                oldDocumentText = oldDocumentText,
+                newDocumentText = newDocumentText,
+                regionStartOffset = suggestion.startOffset,
+                regionEndOffset = suggestion.endOffset,
+                currentRegionText = suggestion.originalText,
+                replacementText = suggestion.replacementText,
+                editOffset = event.offset,
+                oldLength = event.oldLength,
+                newLength = event.newLength,
+            ) ?: return false
+
+        if (update.completed) {
+            clearVisibleSuggestion()
+            debugState.recordSuggestionResult("Suggestion completed by typing", visibleSuggestion = false)
+            return true
+        }
+
+        val advancedSuggestion =
+            suggestion.copy(
+                modificationStamp = event.document.modificationStamp,
+                startOffset = update.startOffset,
+                endOffset = update.endOffset,
+                originalText = update.currentText,
+                caretOffset = suggestion.editor.caretModel.offset,
+            )
+        currentPresentedSuggestion = presenter.show(advancedSuggestion)
         debugState.recordSuggestionResult(
             message =
                 if (currentPresentedSuggestion == null) {
-                    "Preview was not rendered because the changed block was empty"
+                    "Suggestion consumed by typing; no changed block remains"
                 } else {
-                    "Suggestion ghost text is visible"
+                    "Suggestion advanced by matching typed edit"
                 },
             visibleSuggestion = currentPresentedSuggestion != null,
         )
+        return true
     }
+
+    private fun recordUserEdit(
+        document: Document,
+        oldText: String,
+        newText: String,
+    ) {
+        val file = FileDocumentManager.getInstance().getFile(document) ?: return
+        recentEditHistory.recordEdit(projectRelativePath(project, file), oldText, newText)
+    }
+
+    private fun mapCaretAfterReplacement(
+        caretOffset: Int,
+        region: ResolvedSuggestionRegion,
+        originalText: String,
+        replacementText: String,
+    ): Int =
+        when {
+            caretOffset <= region.startOffset -> caretOffset
+            caretOffset > region.endOffset -> caretOffset + replacementText.length - originalText.length
+            else ->
+                region.startOffset +
+                    SuggestionCaretMapper.mapCaretOffset(
+                        originalText = originalText,
+                        replacementText = replacementText,
+                        caretOffsetInOriginal = caretOffset - region.startOffset,
+                    )
+        }
 
     private fun handleRequestError(
         requestId: Long,
@@ -431,9 +643,6 @@ class MercuryNextEditController(
                         "actual ${snapshot.document.modificationStamp}",
             )
         }
-        if (snapshot.editor.caretModel.offset != snapshot.caretOffset) {
-            return RegionCheck(discardReason = "caret moved: expected ${snapshot.caretOffset}, actual ${snapshot.editor.caretModel.offset}")
-        }
         return resolveEditableRegion(
             document = snapshot.document,
             expectedStartOffset = snapshot.editableRegion.startOffset,
@@ -450,9 +659,6 @@ class MercuryNextEditController(
                     "document modification stamp changed: expected ${suggestion.modificationStamp}, " +
                         "actual ${suggestion.document.modificationStamp}",
             )
-        }
-        if (suggestion.editor.caretModel.offset != suggestion.caretOffset) {
-            return RegionCheck(discardReason = "caret moved: expected ${suggestion.caretOffset}, actual ${suggestion.editor.caretModel.offset}")
         }
         return resolveEditableRegion(
             document = suggestion.document,

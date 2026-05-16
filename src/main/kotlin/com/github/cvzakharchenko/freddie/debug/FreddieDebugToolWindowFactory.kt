@@ -1,6 +1,7 @@
 package com.github.cvzakharchenko.freddie.debug
 
 import com.github.cvzakharchenko.freddie.context.MercuryContextDebugInfo
+import com.github.cvzakharchenko.freddie.controller.MercuryNextEditController
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
@@ -11,6 +12,7 @@ import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
+import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.Font
@@ -24,6 +26,8 @@ import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JTabbedPane
 import javax.swing.SwingUtilities
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 class FreddieDebugToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(
@@ -44,6 +48,8 @@ private class FreddieDebugPanel(
 ) : FreddieDebugListener,
     Disposable {
     private val service = project.service<FreddieDebugStateService>()
+    private val controller = project.service<MercuryNextEditController>()
+    private val previewAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val statusLabel = JBLabel()
     private val settingsLabel = JBLabel()
     private val triggerLabel = JBLabel()
@@ -52,8 +58,12 @@ private class FreddieDebugPanel(
     private val contextArea = debugTextArea()
     private val codeToEditArea = debugTextArea()
     private val promptArea = debugTextArea()
-    private val responseArea = debugTextArea()
+    private val responseSummaryArea = debugTextArea()
+    private val responseChoiceArea = debugTextArea(editable = true)
+    private val responseRawArea = debugTextArea()
     private val eventsArea = debugTextArea()
+    private var renderedResponseRevision = Long.MIN_VALUE
+    private var updatingChoiceText = false
 
     val component: JComponent =
         JBPanel<JBPanel<*>>(BorderLayout()).apply {
@@ -63,6 +73,15 @@ private class FreddieDebugPanel(
         }
 
     init {
+        responseChoiceArea.document.addDocumentListener(
+            object : DocumentListener {
+                override fun insertUpdate(event: DocumentEvent) = scheduleEditedChoicePreview()
+
+                override fun removeUpdate(event: DocumentEvent) = scheduleEditedChoicePreview()
+
+                override fun changedUpdate(event: DocumentEvent) = scheduleEditedChoicePreview()
+            },
+        )
         service.addListener(this, this)
     }
 
@@ -83,9 +102,14 @@ private class FreddieDebugPanel(
         contextArea.text = formatContext(snapshot.context)
         codeToEditArea.text = snapshot.lastCodeToEdit.ifBlank { "No code_to_edit block captured yet." }
         promptArea.text = snapshot.lastPrompt.ifBlank { "No prompt captured yet." }
-        responseArea.text = formatResponse(snapshot)
+        responseSummaryArea.text = formatResponseSummary(snapshot)
+        responseRawArea.text = snapshot.lastRawResponseBody.ifBlank { "No raw response body captured yet." }
+        if (snapshot.responseRevision != renderedResponseRevision) {
+            renderedResponseRevision = snapshot.responseRevision
+            setChoiceText(snapshot.lastResponseText, preview = false)
+        }
         eventsArea.text = snapshot.events.joinToString("\n").ifBlank { "No activity yet." }
-        listOf(contextArea, codeToEditArea, promptArea, responseArea, eventsArea).forEach { it.caretPosition = 0 }
+        listOf(contextArea, codeToEditArea, promptArea, responseSummaryArea, responseRawArea, eventsArea).forEach { it.caretPosition = 0 }
     }
 
     private fun buildSummaryPanel(): JComponent =
@@ -129,11 +153,102 @@ private class FreddieDebugPanel(
             addTab("Context", JBScrollPane(contextArea))
             addTab("code_to_edit", JBScrollPane(codeToEditArea))
             addTab("Prompt", JBScrollPane(promptArea))
-            addTab("Response", JBScrollPane(responseArea))
+            addTab("Response", buildResponseTab())
             addTab("Events", JBScrollPane(eventsArea))
         }
 
+    private fun buildResponseTab(): JComponent =
+        JPanel(GridBagLayout()).apply {
+            addResponseHeader(row = 0, title = "Summary")
+            addResponseBody(row = 1, component = JBScrollPane(responseSummaryArea), weighty = 0.12)
+            add(
+                JPanel(BorderLayout()).apply {
+                    add(JBLabel("Choice text"), BorderLayout.WEST)
+                    add(
+                        JPanel().apply {
+                            add(
+                                JButton("Reset to Mercury choice").apply {
+                                    addActionListener { setChoiceText(service.currentSnapshot().lastResponseText, preview = true) }
+                                },
+                            )
+                            add(
+                                JButton("Dismiss preview").apply {
+                                    addActionListener { controller.dismissCurrentSuggestion() }
+                                },
+                            )
+                        },
+                        BorderLayout.EAST,
+                    )
+                },
+                responseHeaderConstraints(row = 2),
+            )
+            addResponseBody(row = 3, component = JBScrollPane(responseChoiceArea), weighty = 0.58)
+            addResponseHeader(row = 4, title = "Raw response body")
+            addResponseBody(row = 5, component = JBScrollPane(responseRawArea), weighty = 0.30)
+        }
+
+    private fun JPanel.addResponseHeader(
+        row: Int,
+        title: String,
+    ) {
+        add(JBLabel(title), responseHeaderConstraints(row))
+    }
+
+    private fun JPanel.addResponseBody(
+        row: Int,
+        component: JComponent,
+        weighty: Double,
+    ) {
+        add(
+            component,
+            GridBagConstraints().apply {
+                gridx = 0
+                gridy = row
+                weightx = 1.0
+                this.weighty = weighty
+                fill = GridBagConstraints.BOTH
+                insets = JBUI.insets(0, 0, 8, 0)
+            },
+        )
+    }
+
+    private fun responseHeaderConstraints(row: Int): GridBagConstraints =
+        GridBagConstraints().apply {
+            gridx = 0
+            gridy = row
+            weightx = 1.0
+            fill = GridBagConstraints.HORIZONTAL
+            anchor = GridBagConstraints.WEST
+            insets = JBUI.insets(0, 0, 4, 0)
+        }
+
+    private fun setChoiceText(
+        text: String,
+        preview: Boolean,
+    ) {
+        updatingChoiceText = true
+        try {
+            responseChoiceArea.text = text
+            responseChoiceArea.caretPosition = 0
+        } finally {
+            updatingChoiceText = false
+        }
+        if (preview) {
+            scheduleEditedChoicePreview()
+        }
+    }
+
+    private fun scheduleEditedChoicePreview() {
+        if (updatingChoiceText) return
+        previewAlarm.cancelAllRequests()
+        previewAlarm.addRequest(
+            { controller.previewEditedChoiceText(responseChoiceArea.text) },
+            DEBUG_PREVIEW_DEBOUNCE_MS,
+        )
+    }
+
     override fun dispose() {
+        previewAlarm.cancelAllRequests()
     }
 
     private fun formatContext(context: MercuryContextDebugInfo?): String {
@@ -160,23 +275,13 @@ private class FreddieDebugPanel(
         }
     }
 
-    private fun formatResponse(snapshot: FreddieDebugSnapshot): String =
+    private fun formatResponseSummary(snapshot: FreddieDebugSnapshot): String =
         buildString {
             appendLine(snapshot.lastResponseSummary)
             if (snapshot.lastError.isNotBlank()) {
                 appendLine()
                 appendLine("Error:")
                 appendLine(snapshot.lastError)
-            }
-            if (snapshot.lastResponseText.isNotBlank()) {
-                appendLine()
-                appendLine("Choice text:")
-                appendLine(snapshot.lastResponseText)
-            }
-            if (snapshot.lastRawResponseBody.isNotBlank()) {
-                appendLine()
-                appendLine("Raw response body:")
-                appendLine(snapshot.lastRawResponseBody)
             }
         }
 
@@ -186,11 +291,12 @@ private class FreddieDebugPanel(
             .format(TIME_FORMAT)
 
     companion object {
+        private const val DEBUG_PREVIEW_DEBOUNCE_MS = 75
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
-        private fun debugTextArea(): JBTextArea =
+        private fun debugTextArea(editable: Boolean = false): JBTextArea =
             JBTextArea().apply {
-                isEditable = false
+                isEditable = editable
                 lineWrap = false
                 font = Font(Font.MONOSPACED, Font.PLAIN, 12)
             }

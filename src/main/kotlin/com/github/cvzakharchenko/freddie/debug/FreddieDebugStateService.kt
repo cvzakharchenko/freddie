@@ -31,6 +31,7 @@ data class FreddieDebugSnapshot(
     val lastResponseSummary: String = "No response yet.",
     val lastResponseText: String = "",
     val lastRawResponseBody: String = "",
+    val responseRevision: Long = 0,
     val lastError: String = "",
     val events: List<String> = emptyList(),
     val updatedAtMillis: Long = System.currentTimeMillis(),
@@ -112,6 +113,7 @@ class FreddieDebugStateService(
         triggerKind: TriggerKind,
         requestNumber: Long,
         requestSnapshot: MercuryRequestSnapshot,
+        visibleSuggestion: Boolean = false,
     ) {
         update("${triggerKind.name} request #$requestNumber started") {
             it.copy(
@@ -119,12 +121,16 @@ class FreddieDebugStateService(
                 enabled = FreddieSettings.getInstance().nextEditEnabled,
                 debounceMs = FreddieSettings.getInstance().debounceMs,
                 apiKeySource = MercuryApiKeyStore.describeApiKeySource(),
-                visibleSuggestion = false,
+                visibleSuggestion = visibleSuggestion,
                 lastTrigger = triggerKind.name,
                 lastDecision = "Request #$requestNumber sent to Mercury",
                 context = requestSnapshot.debugInfo,
                 lastPrompt = requestSnapshot.prompt,
                 lastCodeToEdit = requestSnapshot.debugInfo.codeToEditBlock,
+                lastResponseSummary = "Waiting for Mercury response...",
+                lastResponseText = "",
+                lastRawResponseBody = "",
+                responseRevision = it.responseRevision + 1,
                 lastError = "",
             )
         }
@@ -147,6 +153,7 @@ class FreddieDebugStateService(
                 lastResponseSummary = summary,
                 lastResponseText = completion.rawText ?: completion.replacementText.orEmpty(),
                 lastRawResponseBody = completion.responseBody.orEmpty(),
+                responseRevision = it.responseRevision + 1,
                 lastError = "",
             )
         }
@@ -159,6 +166,19 @@ class FreddieDebugStateService(
         update(message) {
             it.copy(
                 connectionStatus = if (visibleSuggestion) "Suggestion visible" else "Idle",
+                visibleSuggestion = visibleSuggestion,
+                lastDecision = message,
+            )
+        }
+    }
+
+    fun recordDebugPreviewResult(
+        message: String,
+        visibleSuggestion: Boolean,
+    ) {
+        update(message) {
+            it.copy(
+                connectionStatus = if (visibleSuggestion) "Debug preview visible" else "Idle",
                 visibleSuggestion = visibleSuggestion,
                 lastDecision = message,
             )

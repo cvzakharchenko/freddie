@@ -11,6 +11,7 @@ class LineGhostTextPresenter : SuggestionPresenter {
 
     override fun show(suggestion: MercurySuggestion): PresentedSuggestion? {
         current?.dispose()
+        current = null
         val preview = LineGhostTextPreview.create(suggestion) ?: return null
         current = preview
         return preview
@@ -24,43 +25,51 @@ class LineGhostTextPresenter : SuggestionPresenter {
 
 private class LineGhostTextPreview(
     override val suggestion: MercurySuggestion,
-    private val presentable: InlineCompletionElement.Presentable,
+    private val presentables: List<InlineCompletionElement.Presentable>,
 ) : PresentedSuggestion {
     override fun dispose() {
-        Disposer.dispose(presentable)
+        presentables.forEach { Disposer.dispose(it) }
     }
 
     companion object {
         fun create(suggestion: MercurySuggestion): LineGhostTextPreview? {
-            val changedBlock = ChangedBlock.between(suggestion.originalText, suggestion.replacementText) ?: return null
-            val displayText =
-                if (changedBlock.isDeletionOnly) {
-                    "(delete ${deletedLineCount(changedBlock)} line(s))"
+            val presentables = mutableListOf<InlineCompletionElement.Presentable>()
+            for (changedBlock in ChangedBlock.allBetween(suggestion.originalText, suggestion.replacementText)) {
+                val displayText = displayText(changedBlock)
+                if (displayText.isBlank()) continue
+
+                val plan =
+                    LineGhostTextPlan.create(
+                        documentText = suggestion.document.charsSequence,
+                        editableStartOffset = suggestion.startOffset,
+                        changedBlock = changedBlock,
+                        displayText = displayText,
+                    ) ?: continue
+                val presentable =
+                    InlineCompletionTextElement(
+                        plan.text,
+                        inlineSuggestionAttributes(suggestion),
+                    ).toPresentable()
+
+                presentable.render(suggestion.editor, plan.renderOffset)
+                if (presentable.isVisible()) {
+                    presentables.add(presentable)
                 } else {
-                    changedBlock.replacementBlock
+                    Disposer.dispose(presentable)
                 }
-            if (displayText.isBlank()) return null
-
-            val plan =
-                LineGhostTextPlan.create(
-                    documentText = suggestion.document.charsSequence,
-                    editableStartOffset = suggestion.startOffset,
-                    changedBlock = changedBlock,
-                    displayText = displayText,
-                ) ?: return null
-            val presentable =
-                InlineCompletionTextElement(
-                    plan.text,
-                    inlineSuggestionAttributes(suggestion),
-                ).toPresentable()
-
-            presentable.render(suggestion.editor, plan.renderOffset)
-            if (!presentable.isVisible()) {
-                Disposer.dispose(presentable)
-                return null
             }
-            return LineGhostTextPreview(suggestion, presentable)
+
+            return presentables
+                .takeIf { it.isNotEmpty() }
+                ?.let { LineGhostTextPreview(suggestion, it) }
         }
+
+        private fun displayText(changedBlock: ChangedBlock): String =
+            if (changedBlock.isDeletionOnly) {
+                "(delete ${deletedLineCount(changedBlock)} line(s))"
+            } else {
+                changedBlock.replacementBlock
+            }
 
         private fun inlineSuggestionAttributes(suggestion: MercurySuggestion): TextAttributes =
             suggestion.editor.colorsScheme

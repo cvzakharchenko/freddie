@@ -69,4 +69,88 @@ class ChangedBlockTest {
 
         assertEquals(null, block)
     }
+
+    @Test
+    fun `separates independent replacements into multiple blocks`() {
+        val original =
+            "one\n" +
+                "old two\n" +
+                "three\n" +
+                "old five\n" +
+                "six\n"
+        val replacement =
+            "one\n" +
+                "new two\n" +
+                "three\n" +
+                "new five\n" +
+                "six\n"
+
+        val blocks = ChangedBlock.allBetween(original, replacement)
+
+        assertEquals(2, blocks.size)
+        assertEquals(original.indexOf("old two"), blocks[0].anchorOffsetInOriginal)
+        assertEquals(1, blocks[0].originalStartLine)
+        assertEquals(2, blocks[0].originalEndLineExclusive)
+        assertEquals("new two", blocks[0].replacementBlock)
+        assertEquals(original.indexOf("old five"), blocks[1].anchorOffsetInOriginal)
+        assertEquals(3, blocks[1].originalStartLine)
+        assertEquals(4, blocks[1].originalEndLineExclusive)
+        assertEquals("new five", blocks[1].replacementBlock)
+    }
+
+    @Test
+    fun `separates independent insertions into multiple blocks`() {
+        val original = "one\nthree\nfive\n"
+        val replacement = "one\ntwo\nthree\nfour\nfive\n"
+
+        val blocks = ChangedBlock.allBetween(original, replacement)
+
+        assertEquals(2, blocks.size)
+        assertEquals(original.indexOf("three"), blocks[0].anchorOffsetInOriginal)
+        assertEquals(1, blocks[0].originalStartLine)
+        assertEquals(1, blocks[0].originalEndLineExclusive)
+        assertEquals("two", blocks[0].replacementBlock)
+        assertEquals(original.indexOf("five"), blocks[1].anchorOffsetInOriginal)
+        assertEquals(2, blocks[1].originalStartLine)
+        assertEquals(2, blocks[1].originalEndLineExclusive)
+        assertEquals("four", blocks[1].replacementBlock)
+    }
+
+    @Test
+    fun `drops only blocks touching the last editable line`() {
+        val original =
+            "one\n" +
+                "old two\n" +
+                "three\n" +
+                "old last\n"
+        val replacement =
+            "one\n" +
+                "new two\n" +
+                "three\n" +
+                "new last\n"
+
+        val filtered = ChangedBlock.dropLastLineTouchingBlocks(original, replacement)
+
+        assertEquals(1, filtered.keptBlockCount)
+        assertEquals(1, filtered.droppedBlockCount)
+        assertEquals(
+            "one\n" +
+                "new two\n" +
+                "three\n" +
+                "old last\n",
+            filtered.text,
+        )
+    }
+
+    @Test
+    fun `drops insertions anchored on the last editable line`() {
+        val original = "one\nlast\n"
+        val replacement = "one\ninserted\nlast\n"
+
+        val filtered = ChangedBlock.dropLastLineTouchingBlocks(original, replacement)
+
+        assertEquals(0, filtered.keptBlockCount)
+        assertEquals(1, filtered.droppedBlockCount)
+        assertEquals(original, filtered.text)
+    }
 }

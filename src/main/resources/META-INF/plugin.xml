@@ -13,7 +13,6 @@
                     anchor="right"
                     factoryClass="com.github.cvzakharchenko.freddie.debug.FreddieDebugToolWindowFactory"/>
         <postStartupActivity implementation="com.github.cvzakharchenko.freddie.startup.FreddieProjectActivity" />
-        <applicationService serviceImplementation="com.github.cvzakharchenko.freddie.actions.MercuryEditorActionRouterService" />
         <applicationConfigurable
                 parentId="tools"
                 displayName="Freddie"
@@ -26,17 +25,26 @@
         <action id="com.github.cvzakharchenko.freddie.RequestMercuryNextEdit"
                 class="com.github.cvzakharchenko.freddie.actions.RequestMercuryNextEditAction"
                 text="Request Mercury Next Edit"
-                description="Request a Mercury next edit prediction">
+                description="Request a Mercury next edit prediction"
+                use-shortcut-of="CallInlineCompletionAction">
             <keyboard-shortcut keymap="$default" first-keystroke="shift ENTER"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="shift ENTER"/>
         </action>
         <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEdit"
                 class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditAction"
                 text="Accept Mercury Next Edit"
-                description="Accept the visible Mercury next edit prediction">
-            <keyboard-shortcut keymap="$default" first-keystroke="TAB"/>
-            <keyboard-shortcut keymap="Mac OS X" first-keystroke="TAB"/>
-        </action>
+                description="Accept the visible Mercury next edit prediction"
+                use-shortcut-of="InsertInlineCompletionAction"/>
+        <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEditWord"
+                class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditWordAction"
+                text="Accept Mercury Next Edit Word"
+                description="Accept the next word from the visible Mercury next edit prediction"
+                use-shortcut-of="InsertInlineCompletionWordAction"/>
+        <action id="com.github.cvzakharchenko.freddie.AcceptMercuryNextEditLine"
+                class="com.github.cvzakharchenko.freddie.actions.AcceptMercuryNextEditLineAction"
+                text="Accept Mercury Next Edit Line"
+                description="Accept the next line from the visible Mercury next edit prediction"
+                use-shortcut-of="InsertInlineCompletionLineAction"/>
         <action id="com.github.cvzakharchenko.freddie.DismissMercuryNextEdit"
                 class="com.github.cvzakharchenko.freddie.actions.DismissMercuryNextEditAction"
                 text="Dismiss Mercury Next Edit"

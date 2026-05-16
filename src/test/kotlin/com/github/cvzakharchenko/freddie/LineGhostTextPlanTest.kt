@@ -35,6 +35,23 @@ class LineGhostTextPlanTest {
     }
 
     @Test
+    fun `renders separated insertion blocks at their own anchors`() {
+        val original = "one\nthree\nfive\n"
+        val replacement = "one\ntwo\nthree\nfour\nfive\n"
+        val blocks = ChangedBlock.allBetween(original, replacement)
+        val plans =
+            blocks.map {
+                requireNotNull(LineGhostTextPlan.create(original, 0, it, it.replacementBlock))
+            }
+
+        assertEquals(2, plans.size)
+        assertEquals("one".length, plans[0].renderOffset)
+        assertEquals("\ntwo", plans[0].text)
+        assertEquals("one\nthree".length, plans[1].renderOffset)
+        assertEquals("\nfour", plans[1].text)
+    }
+
+    @Test
     fun `renders inserted auth status case below the previous unchanged return line`() {
         val original =
             "\t\tcase AuthStatus::ErrorAbsentPlayer:\n" +
