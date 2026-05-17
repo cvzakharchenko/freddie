@@ -730,8 +730,6 @@ class MercuryNextEditController(
         }
 
     private fun resolveSnapshotRegion(snapshot: MercuryRequestSnapshot): RegionCheck {
-        val selectedEditor = FileEditorManager.getInstance(project).selectedTextEditor
-        if (selectedEditor != snapshot.editor) return RegionCheck(discardReason = "selected editor changed")
         if (snapshot.editor.isDisposed) return RegionCheck(discardReason = "editor was disposed")
         if (snapshot.document.modificationStamp != snapshot.modificationStamp) {
             return RegionCheck(
