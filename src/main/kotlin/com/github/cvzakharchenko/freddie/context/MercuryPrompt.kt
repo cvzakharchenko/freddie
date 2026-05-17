@@ -79,8 +79,6 @@ class MercuryContextCollector(
             recentlyViewedSnippetTracker.snippetsFor(
                 currentEditor = editor,
                 currentFilePath = filePath,
-                editableStartLine = editableRegion.startLine,
-                editableEndLine = editableRegion.endLine,
             )
         val viewedSnippets = snippetSelection.snippets
         val copiedSnippetSelection = copiedSnippetTracker.snippetsWithinBudget()
