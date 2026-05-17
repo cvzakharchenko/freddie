@@ -17,10 +17,12 @@ import com.github.cvzakharchenko.freddie.presentation.MercurySuggestion
 import com.github.cvzakharchenko.freddie.presentation.PresentedSuggestion
 import com.github.cvzakharchenko.freddie.presentation.SettingsBackedSuggestionPresenter
 import com.github.cvzakharchenko.freddie.settings.FreddieSettings
+import com.github.cvzakharchenko.freddie.settings.FreddieSuggestionDisplayMode
 import com.github.cvzakharchenko.freddie.settings.MercuryApiKeyStore
 import com.github.cvzakharchenko.freddie.trigger.DismissPauseState
 import com.github.cvzakharchenko.freddie.trigger.MercuryTriggerPolicy
 import com.github.cvzakharchenko.freddie.trigger.TriggerKind
+import com.intellij.ide.IdeEventQueue
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -46,6 +48,10 @@ import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
+import java.awt.AWTEvent
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
+import java.awt.event.WindowEvent
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicLong
 
@@ -98,6 +104,7 @@ class MercuryNextEditController(
     private var currentPresentedSuggestion: PresentedSuggestion? = null
     private var lastPreviewSnapshot: MercuryRequestSnapshot? = null
     private var suppressDocumentTriggers = false
+    private var altGhostTextOverride = false
 
     fun start() {
         if (started || project.isDisposed) return
@@ -128,6 +135,14 @@ class MercuryNextEditController(
                     FileEditorManager.getInstance(project).selectedTextEditor?.let { recordEditorVisit(it) }
                 }
             },
+        )
+
+        IdeEventQueue.getInstance().addDispatcher(
+            IdeEventQueue.EventDispatcher { event ->
+                handleModifierKeyEvent(event)
+                false
+            },
+            this,
         )
     }
 
@@ -594,6 +609,76 @@ class MercuryNextEditController(
             visibleSuggestion = currentPresentedSuggestion != null,
         )
         return true
+    }
+
+    private fun handleModifierKeyEvent(event: AWTEvent) {
+        val altPressed =
+            when (event) {
+                is KeyEvent -> altPressedAfter(event) ?: return
+                is WindowEvent ->
+                    when (event.id) {
+                        WindowEvent.WINDOW_DEACTIVATED,
+                        WindowEvent.WINDOW_LOST_FOCUS,
+                        -> false
+                        else -> return
+                    }
+                else -> return
+            }
+
+        setAltGhostTextOverride(altPressed)
+    }
+
+    private fun altPressedAfter(event: KeyEvent): Boolean? =
+        when (event.id) {
+            KeyEvent.KEY_PRESSED ->
+                if (event.keyCode == KeyEvent.VK_ALT_GRAPH) {
+                    false
+                } else if (event.keyCode == KeyEvent.VK_ALT) {
+                    true
+                } else {
+                    event.hasPlainAltModifier()
+                }
+            KeyEvent.KEY_RELEASED ->
+                if (event.keyCode == KeyEvent.VK_ALT || event.keyCode == KeyEvent.VK_ALT_GRAPH) {
+                    false
+                } else {
+                    event.hasPlainAltModifier()
+                }
+            else -> null
+        }
+
+    private fun KeyEvent.hasPlainAltModifier(): Boolean =
+        (modifiersEx and InputEvent.ALT_DOWN_MASK) != 0 &&
+            (modifiersEx and InputEvent.ALT_GRAPH_DOWN_MASK) == 0
+
+    private fun setAltGhostTextOverride(active: Boolean) {
+        if (altGhostTextOverride == active) return
+        altGhostTextOverride = active
+        presenter.setGhostTextOverride(active)
+
+        if (FreddieSettings.getInstance().suggestionDisplayMode != FreddieSuggestionDisplayMode.LINE_HINT) return
+        repaintVisibleSuggestionForDisplayModeOverride(
+            if (active) {
+                "Alt pressed; temporarily showing line hint suggestion as ghost text"
+            } else {
+                "Alt released; restored line hint suggestion display"
+            },
+        )
+    }
+
+    private fun repaintVisibleSuggestionForDisplayModeOverride(message: String) {
+        val suggestion = currentPresentedSuggestion?.suggestion ?: return
+        currentPresentedSuggestion = presenter.show(suggestion)
+        val presentation = currentPresentedSuggestion?.presentationDescription
+        debugState.recordSuggestionResult(
+            message =
+                if (presentation != null) {
+                    "$message: $presentation"
+                } else {
+                    "$message, but the suggestion was not rendered"
+                },
+            visibleSuggestion = currentPresentedSuggestion != null,
+        )
     }
 
     private fun recordUserEdit(

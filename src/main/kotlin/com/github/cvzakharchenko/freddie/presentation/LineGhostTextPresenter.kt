@@ -66,7 +66,7 @@ private class LineGhostTextPreview(
                     val presentable =
                         InlineCompletionTextElement(
                             segment.text,
-                            SuggestionPreviewStyles.attributes(suggestion.editor, segment.kind),
+                            SuggestionPreviewStyles.ghostTextAttributes(suggestion.editor, segment.kind),
                         ).toPresentable()
 
                     presentable.render(suggestion.editor, plan.renderOffset)

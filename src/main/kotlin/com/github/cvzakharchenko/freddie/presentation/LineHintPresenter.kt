@@ -1,19 +1,16 @@
 package com.github.cvzakharchenko.freddie.presentation
 
-import com.github.cvzakharchenko.freddie.settings.FreddieSettings
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.editor.EditorCustomElementRenderer
-import com.intellij.openapi.editor.Inlay
-import com.intellij.openapi.editor.InlayProperties
+import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.editor.ex.util.EditorUtil
+import com.intellij.openapi.editor.markup.HighlighterLayer
+import com.intellij.openapi.editor.markup.LineSeparatorRenderer
 import com.intellij.openapi.editor.markup.RangeHighlighter
-import com.intellij.openapi.editor.markup.TextAttributes
-import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.editor.markup.SeparatorPlacement
 import com.intellij.util.ui.JBUI
 import java.awt.Color
 import java.awt.Font
-import java.awt.Graphics2D
-import java.awt.geom.Rectangle2D
+import java.awt.Graphics
 
 class LineHintPresenter : SuggestionPresenter {
     private var current: LineHintPreview? = null
@@ -34,74 +31,95 @@ class LineHintPresenter : SuggestionPresenter {
 
 private class LineHintPreview(
     override val suggestion: MercurySuggestion,
-    private val inlays: List<Inlay<*>>,
+    private val lineHighlighters: List<RangeHighlighter>,
     private val deletedHighlighters: List<RangeHighlighter>,
 ) : PresentedSuggestion {
     override val presentationDescription: String =
-        "Line hint (${inlays.size} block inlay(s), ${deletedHighlighters.size} deletion highlighter(s), geometric marker)"
+        "Line hint (${lineHighlighters.size} line separator(s), ${deletedHighlighters.size} deletion highlighter(s))"
 
     override fun dispose() {
-        inlays.forEach { inlay ->
-            if (inlay.isValid) {
-                Disposer.dispose(inlay)
-            }
-        }
         if (!suggestion.editor.isDisposed) {
+            lineHighlighters.forEach { suggestion.editor.markupModel.removeHighlighter(it) }
             deletedHighlighters.forEach { suggestion.editor.markupModel.removeHighlighter(it) }
         }
     }
 
     companion object {
         fun create(suggestion: MercurySuggestion): LineHintPreview? {
-            val inlays = mutableListOf<Inlay<*>>()
+            val lineHighlighters = mutableListOf<RangeHighlighter>()
             val deletedHighlighters = mutableListOf<RangeHighlighter>()
-            suggestion.editor.inlayModel.execute(true) {
-                for (changedBlock in ChangedBlock.allBetween(suggestion.originalText, suggestion.replacementText)) {
-                    val blockDiff =
-                        SuggestionTextDiff.between(
-                            original = suggestion.originalText,
-                            replacement = suggestion.replacementText,
-                            block = changedBlock,
-                        )
-                    deletedHighlighters.addAll(
-                        SuggestionPreviewStyles.createDeletedHighlighters(
-                            suggestion = suggestion,
-                            deletedRanges = blockDiff.deletedRanges,
-                        ),
+            for (changedBlock in ChangedBlock.allBetween(suggestion.originalText, suggestion.replacementText)) {
+                val blockDiff =
+                    SuggestionTextDiff.between(
+                        original = suggestion.originalText,
+                        replacement = suggestion.replacementText,
+                        block = changedBlock,
                     )
+                deletedHighlighters.addAll(
+                    SuggestionPreviewStyles.createDeletedHighlighters(
+                        suggestion = suggestion,
+                        deletedRanges = blockDiff.deletedRanges,
+                    ),
+                )
 
-                    val displaySegments = SuggestionTextDiff.limitVisibleLines(blockDiff.replacementSegments)
-                    val displayText = displaySegments.joinToString(separator = "") { it.text }
-                    if (displayText.isBlank()) continue
+                val displaySegments = SuggestionTextDiff.limitVisibleLines(blockDiff.replacementSegments)
+                val displayText = displaySegments.joinToString(separator = "") { it.text }
+                if (displayText.isBlank()) continue
 
-                    val plan =
-                        LineHintPlan.create(
-                            documentText = suggestion.document.charsSequence,
-                            editableStartOffset = suggestion.startOffset,
-                            changedBlock = changedBlock,
-                            displaySegments = displaySegments,
-                        ) ?: continue
+                val plan =
+                    LineHintPlan.create(
+                        documentText = suggestion.document.charsSequence,
+                        editableStartOffset = suggestion.startOffset,
+                        changedBlock = changedBlock,
+                        displaySegments = displaySegments,
+                    ) ?: continue
 
-                    val inlay =
-                        suggestion.editor.inlayModel.addBlockElement(
-                            plan.renderOffset,
-                            InlayProperties()
-                                .relatesToPrecedingText(!plan.showAbove)
-                                .showAbove(plan.showAbove)
-                                .priority(0),
-                            LineHintRenderer(plan.lines),
-                        )
-                    if (inlay != null) {
-                        inlays.add(inlay)
-                    }
-                }
+                val lineHighlighter =
+                    suggestion.editor.markupModel.addLineHighlighter(
+                        lineNumberAt(suggestion.document.charsSequence, plan.renderOffset),
+                        HighlighterLayer.ADDITIONAL_SYNTAX,
+                        null,
+                    )
+                lineHighlighter.setLineSeparatorPlacement(
+                    if (plan.showAbove) SeparatorPlacement.TOP else SeparatorPlacement.BOTTOM,
+                )
+                lineHighlighter.setLineSeparatorRenderer(
+                    LineHintSeparatorRenderer(
+                        editor = suggestion.editor,
+                        anchorLine = lineNumberAt(suggestion.document.charsSequence, plan.renderOffset),
+                        lines = plan.lines,
+                    ),
+                )
+                lineHighlighter.setLineSeparatorColor(
+                    SuggestionPreviewStyles.lineHintInsertedColor(suggestion.editor)
+                        ?: suggestion.editor.colorsScheme.defaultForeground,
+                )
+                lineHighlighters.add(lineHighlighter)
             }
 
-            return if (inlays.isNotEmpty() || deletedHighlighters.isNotEmpty()) {
-                LineHintPreview(suggestion, inlays, deletedHighlighters)
+            return if (lineHighlighters.isNotEmpty() || deletedHighlighters.isNotEmpty()) {
+                LineHintPreview(suggestion, lineHighlighters, deletedHighlighters)
             } else {
                 null
             }
+        }
+
+        private fun lineNumberAt(
+            text: CharSequence,
+            offset: Int,
+        ): Int {
+            val safeOffset = offset.coerceIn(0, text.length)
+            if (safeOffset == text.length && text.isNotEmpty() && text.last() == '\n') {
+                return lineNumberAt(text, safeOffset - 1)
+            }
+
+            var line = 0
+            for (index in 0 until safeOffset) {
+                if (text[index] == '\n') {
+                    line++
+                }
+            }
+            return line
         }
     }
 }
@@ -171,50 +189,31 @@ internal object LineHintTextLayout {
     }
 }
 
-private class LineHintRenderer(
+private class LineHintSeparatorRenderer(
+    private val editor: Editor,
+    private val anchorLine: Int,
     private val lines: List<List<SuggestionTextSegment>>,
-) : EditorCustomElementRenderer {
-    override fun calcWidthInPixels(inlay: Inlay<*>): Int {
-        val editor = inlay.editor
-        val width =
-            lines.maxOfOrNull { line ->
-                measureLine(editor, line) + RIGHT_PADDING
-            } ?: RIGHT_PADDING
-        return width.coerceAtLeast(1)
-    }
-
-    override fun calcHeightInPixels(inlay: Inlay<*>): Int =
-        VERTICAL_PADDING * 2 +
-            lines.size * BAR_HEIGHT +
-            (lines.size - 1).coerceAtLeast(0) * BAR_GAP
-
-    override fun paint(
-        inlay: Inlay<*>,
-        g: Graphics2D,
-        targetRegion: Rectangle2D,
-        textAttributes: TextAttributes,
+) : LineSeparatorRenderer {
+    override fun drawLine(
+        g: Graphics,
+        x1: Int,
+        x2: Int,
+        y: Int,
     ) {
-        val editor = inlay.editor
-        val graphics = g.create() as Graphics2D
-        try {
-            val baseX = targetRegion.x.toInt()
-            for ((lineIndex, line) in lines.withIndex()) {
-                paintLine(
-                    editor = editor,
-                    graphics = graphics,
-                    line = line,
-                    x = baseX,
-                    y = targetRegion.y.toInt() + VERTICAL_PADDING + lineIndex * (BAR_HEIGHT + BAR_GAP),
-                )
+        val startX = editor.logicalPositionToXY(LogicalPosition(anchorLine, 0)).x
+        if (lines.size == 1) {
+            paintSegmentedLine(g, lines.first(), startX, y)
+        } else {
+            val width = lines.maxOfOrNull { measureLine(editor, it) } ?: 0
+            if (width > 0) {
+                g.color = SuggestionPreviewStyles.lineHintInsertedColor(editor) ?: editor.colorsScheme.defaultForeground
+                g.fillRect(startX, y, width + RIGHT_PADDING, BAR_HEIGHT)
             }
-        } finally {
-            graphics.dispose()
         }
     }
 
-    private fun paintLine(
-        editor: Editor,
-        graphics: Graphics2D,
+    private fun paintSegmentedLine(
+        graphics: Graphics,
         line: List<SuggestionTextSegment>,
         x: Int,
         y: Int,
@@ -224,8 +223,9 @@ private class LineHintRenderer(
             val attributes = SuggestionPreviewStyles.attributes(editor, segment.kind)
             val fontType = attributes.fontType.takeIf { it >= 0 } ?: Font.PLAIN
             val segmentWidth = measureText(editor, segment.text, currentX - x, fontType)
-            if (segmentWidth > 0) {
-                graphics.color = markerColor(editor, segment.kind, attributes)
+            val color = markerColor(editor, segment.kind)
+            if (segmentWidth > 0 && color != null) {
+                graphics.color = color
                 graphics.fillRect(currentX, y, segmentWidth, BAR_HEIGHT)
             }
             currentX += segmentWidth
@@ -248,18 +248,12 @@ private class LineHintRenderer(
     private fun markerColor(
         editor: Editor,
         kind: SuggestionTextSegmentKind,
-        attributes: TextAttributes,
-    ): Color =
+    ): Color? =
         when (kind) {
             SuggestionTextSegmentKind.EQUAL ->
-                attributes.foregroundColor
-                    ?: attributes.backgroundColor
-                    ?: editor.colorsScheme.defaultForeground
+                SuggestionPreviewStyles.lineHintMatchedColor()
             SuggestionTextSegmentKind.INSERTED ->
-                FreddieSettings.getInstance().customLineHintInsertedColor
-                    ?: attributes.backgroundColor
-                    ?: attributes.foregroundColor
-                    ?: editor.colorsScheme.defaultForeground
+                SuggestionPreviewStyles.lineHintInsertedColor(editor) ?: editor.colorsScheme.defaultForeground
         }
 
     private fun measureText(
@@ -272,8 +266,6 @@ private class LineHintRenderer(
 
     companion object {
         private val BAR_HEIGHT = JBUI.scale(1)
-        private val BAR_GAP = JBUI.scale(2)
-        private val VERTICAL_PADDING = JBUI.scale(2)
         private val RIGHT_PADDING = JBUI.scale(16)
     }
 }

@@ -6,9 +6,10 @@ import com.github.cvzakharchenko.freddie.settings.FreddieSuggestionDisplayMode
 class SettingsBackedSuggestionPresenter : SuggestionPresenter {
     private val ghostTextPresenter = LineGhostTextPresenter()
     private val lineHintPresenter = LineHintPresenter()
+    private var ghostTextOverride = false
 
     override fun show(suggestion: MercurySuggestion): PresentedSuggestion? =
-        when (FreddieSettings.getInstance().suggestionDisplayMode) {
+        when (effectiveDisplayMode()) {
             FreddieSuggestionDisplayMode.GHOST_TEXT -> {
                 lineHintPresenter.dispose()
                 ghostTextPresenter.show(suggestion)
@@ -18,6 +19,19 @@ class SettingsBackedSuggestionPresenter : SuggestionPresenter {
                 lineHintPresenter.show(suggestion)
             }
         }
+
+    fun setGhostTextOverride(value: Boolean) {
+        ghostTextOverride = value
+    }
+
+    private fun effectiveDisplayMode(): FreddieSuggestionDisplayMode {
+        val configuredMode = FreddieSettings.getInstance().suggestionDisplayMode
+        return if (configuredMode == FreddieSuggestionDisplayMode.LINE_HINT && ghostTextOverride) {
+            FreddieSuggestionDisplayMode.GHOST_TEXT
+        } else {
+            configuredMode
+        }
+    }
 
     override fun dispose() {
         ghostTextPresenter.dispose()

@@ -51,6 +51,24 @@ class LineHintPlanTest {
     }
 
     @Test
+    fun `keeps multiple suggested lines for a single solid marker`() {
+        val original = "keep\nnext\n"
+        val replacement = "keep\nshort\nmuch longer inserted line\nnext\n"
+        val block = requireNotNull(ChangedBlock.between(original, replacement))
+        val plan = requireNotNull(LineHintPlan.create(original, 0, block, segments(original, replacement, block)))
+
+        assertEquals("keep".length, plan.renderOffset)
+        assertEquals(false, plan.showAbove)
+        assertEquals(
+            listOf(
+                listOf(SuggestionTextSegmentKind.INSERTED to "short"),
+                listOf(SuggestionTextSegmentKind.INSERTED to "much longer inserted line"),
+            ),
+            plan.lines.map { line -> line.map { it.kind to it.text } },
+        )
+    }
+
+    @Test
     fun `renders file-start insertions above the first line`() {
         val original = "next\n"
         val replacement = "inserted\nnext\n"
