@@ -122,13 +122,13 @@ object LineEndingNormalizer {
         replacement: String,
         original: String,
     ): String {
-        val originalEndsWithLineEnding = original.endsWith("\n")
-        val replacementEndsWithLineEnding = replacement.endsWith("\n")
-        return when {
-            originalEndsWithLineEnding && !replacementEndsWithLineEnding -> "$replacement\n"
-            !originalEndsWithLineEnding && replacementEndsWithLineEnding -> replacement.dropLast(1)
-            else -> replacement
+        val originalTrailingLineEndings = trailingLineEndingCount(original)
+        val replacementTrailingLineEndings = trailingLineEndingCount(replacement)
+        if (originalTrailingLineEndings == replacementTrailingLineEndings) {
+            return replacement
         }
+
+        return replacement.dropLast(replacementTrailingLineEndings) + "\n".repeat(originalTrailingLineEndings)
     }
 
     private fun alignLeadingLineEndingPresence(
@@ -143,6 +143,16 @@ object LineEndingNormalizer {
         val originalFirstLine = original.substringBefore('\n')
         if (originalFirstLine.isEmpty()) return replacement
         return if (withoutLeadingBlank.startsWith(originalFirstLine)) withoutLeadingBlank else replacement
+    }
+
+    private fun trailingLineEndingCount(text: String): Int {
+        var count = 0
+        var index = text.length - 1
+        while (index >= 0 && text[index] == '\n') {
+            count++
+            index--
+        }
+        return count
     }
 
     private val LINE_ENDING_PATTERN = Regex("\\r\\n|\\r|\\n")

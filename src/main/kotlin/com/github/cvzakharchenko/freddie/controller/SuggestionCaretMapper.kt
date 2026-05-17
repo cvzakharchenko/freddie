@@ -33,7 +33,7 @@ internal object SuggestionCaretMapper {
                 replacementEndExclusive = replacementLines.size,
             ) ?: lastBlock
 
-        return lastBlock?.caretOffset(replacementLines, replacementText.length) ?: replacementText.length
+        return lastBlock?.caretOffset(originalLines, replacementLines, replacementText.length) ?: replacementText.length
     }
 
     private fun changedBlock(
@@ -43,18 +43,75 @@ internal object SuggestionCaretMapper {
         replacementEndExclusive: Int,
     ): ChangedLineBlock? {
         if (originalStart == originalEndExclusive && replacementStart == replacementEndExclusive) return null
-        return ChangedLineBlock(replacementStart, replacementEndExclusive)
+        return ChangedLineBlock(
+            originalStartLine = originalStart,
+            originalEndLineExclusive = originalEndExclusive,
+            replacementStartLine = replacementStart,
+            replacementEndLineExclusive = replacementEndExclusive,
+        )
     }
 
     private fun ChangedLineBlock.caretOffset(
+        originalLines: List<LineInfo>,
         replacementLines: List<LineInfo>,
         replacementLength: Int,
     ): Int =
         if (replacementStartLine < replacementEndLineExclusive) {
-            replacementLines[replacementEndLineExclusive - 1].endOffset
+            val replacementLine = replacementLines[replacementEndLineExclusive - 1]
+            val originalLine = originalLines.getOrNull(originalEndLineExclusive - 1)
+            val lineCaretOffset =
+                if (originalLine != null && originalLineCount == replacementLineCount) {
+                    caretAfterChangedPart(originalLine.text, replacementLine.text)
+                } else {
+                    replacementLine.text.length
+                }
+            replacementLine.startOffset + lineCaretOffset
         } else {
             replacementLines.getOrNull(replacementStartLine)?.startOffset ?: replacementLength
         }
+
+    private val ChangedLineBlock.originalLineCount: Int
+        get() = originalEndLineExclusive - originalStartLine
+
+    private val ChangedLineBlock.replacementLineCount: Int
+        get() = replacementEndLineExclusive - replacementStartLine
+
+    private fun caretAfterChangedPart(
+        originalLine: String,
+        replacementLine: String,
+    ): Int {
+        val prefixLength = commonPrefixLength(originalLine, replacementLine)
+        val suffixLength = commonSuffixLength(originalLine, replacementLine, prefixLength)
+        return (replacementLine.length - suffixLength).coerceAtLeast(prefixLength)
+    }
+
+    private fun commonPrefixLength(
+        original: String,
+        replacement: String,
+    ): Int {
+        val maxLength = minOf(original.length, replacement.length)
+        var index = 0
+        while (index < maxLength && original[index] == replacement[index]) {
+            index++
+        }
+        return index
+    }
+
+    private fun commonSuffixLength(
+        original: String,
+        replacement: String,
+        prefixLength: Int,
+    ): Int {
+        var length = 0
+        while (
+            length < original.length - prefixLength &&
+            length < replacement.length - prefixLength &&
+            original[original.lastIndex - length] == replacement[replacement.lastIndex - length]
+        ) {
+            length++
+        }
+        return length
+    }
 
     private fun lcsMatches(
         originalLines: List<LineInfo>,
@@ -118,7 +175,6 @@ internal object SuggestionCaretMapper {
                     LineInfo(
                         text = text.substring(lineStart, index),
                         startOffset = lineStart,
-                        endOffset = index,
                     ),
                 )
                 index += separatorLength
@@ -132,7 +188,6 @@ internal object SuggestionCaretMapper {
                 LineInfo(
                     text = text.substring(lineStart),
                     startOffset = lineStart,
-                    endOffset = text.length,
                 ),
             )
         }
@@ -140,6 +195,8 @@ internal object SuggestionCaretMapper {
     }
 
     private data class ChangedLineBlock(
+        val originalStartLine: Int,
+        val originalEndLineExclusive: Int,
         val replacementStartLine: Int,
         val replacementEndLineExclusive: Int,
     )
@@ -147,6 +204,5 @@ internal object SuggestionCaretMapper {
     private data class LineInfo(
         val text: String,
         val startOffset: Int,
-        val endOffset: Int,
     )
 }

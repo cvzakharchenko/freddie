@@ -46,6 +46,21 @@ class LineEndingNormalizerTest {
     }
 
     @Test
+    fun `prepared replacement preserves editable region trailing empty line`() {
+        val original = "one\r\ntwo\r\n\r\n"
+        val mercuryReplacement = "one\ntwo changed\n"
+
+        val prepared =
+            LineEndingNormalizer.prepareReplacementForEditableRegion(
+                mercuryReplacement = mercuryReplacement,
+                originalEditableRegion = original,
+                documentText = "file\r\nwith\r\ncrlf\r\n",
+            )
+
+        assertEquals("one\r\ntwo changed\r\n\r\n", prepared.applicationText)
+    }
+
+    @Test
     fun `prepared replacement uses dominant document line ending for application`() {
         val prepared =
             LineEndingNormalizer.prepareReplacementForEditableRegion(

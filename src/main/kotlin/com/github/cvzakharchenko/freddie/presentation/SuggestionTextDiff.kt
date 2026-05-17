@@ -94,6 +94,8 @@ internal object SuggestionTextDiff {
         normalizedOriginal: LineEndingNormalizer.NormalizedText,
     ): SuggestionBlockTextDiff {
         val commonPrefixLength = commonPrefixLength(originalLine.text, replacementLine.text)
+        val commonSuffixLength = commonSuffixLength(originalLine.text, replacementLine.text, commonPrefixLength)
+        val originalChangedEndOffset = originalLine.text.length - commonSuffixLength
         val originalTokens = SuggestionTextTokenizer.tokenize(originalLine.text)
         val replacementTokens = SuggestionTextTokenizer.tokenize(replacementLine.text)
         val matches = lcsMatches(originalTokens, replacementTokens)
@@ -116,19 +118,23 @@ internal object SuggestionTextDiff {
         originalTokens.forEachIndexed { index, token ->
             if (index !in matchedOriginalIndexes && !token.isWhitespace) {
                 val deleteStartOffset = maxOf(token.startOffset, commonPrefixLength)
-                if (deleteStartOffset < token.endOffset) {
+                val deleteEndOffset = minOf(token.endOffset, originalChangedEndOffset)
+                if (deleteStartOffset < deleteEndOffset) {
                     deletedRanges.add(
                         SuggestionDeletedRange(
                             startOffsetInOriginal =
                                 normalizedOriginal.sourceOffset(originalLine.startOffset + deleteStartOffset),
-                            endOffsetInOriginal = normalizedOriginal.sourceOffset(originalLine.startOffset + token.endOffset),
+                            endOffsetInOriginal = normalizedOriginal.sourceOffset(originalLine.startOffset + deleteEndOffset),
                         ),
                     )
                 }
             }
         }
 
-        return SuggestionBlockTextDiff(forcePrefixEqual(segments, commonPrefixLength), deletedRanges)
+        return SuggestionBlockTextDiff(
+            forceEqualAffixes(segments, commonPrefixLength, commonSuffixLength),
+            deletedRanges,
+        )
     }
 
     private fun insertedLineSegments(line: String): List<SuggestionTextSegment> =
@@ -240,6 +246,32 @@ internal object SuggestionTextDiff {
         return index
     }
 
+    private fun commonSuffixLength(
+        original: String,
+        replacement: String,
+        prefixLength: Int,
+    ): Int {
+        val max = minOf(original.length, replacement.length) - prefixLength
+        var suffix = 0
+        while (
+            suffix < max &&
+            original[original.lastIndex - suffix] == replacement[replacement.lastIndex - suffix]
+        ) {
+            suffix++
+        }
+        return suffix
+    }
+
+    private fun forceEqualAffixes(
+        segments: List<SuggestionTextSegment>,
+        prefixLength: Int,
+        suffixLength: Int,
+    ): List<SuggestionTextSegment> =
+        forceSuffixEqual(
+            segments = forcePrefixEqual(segments, prefixLength),
+            suffixLength = suffixLength,
+        )
+
     private fun forcePrefixEqual(
         segments: List<SuggestionTextSegment>,
         prefixLength: Int,
@@ -263,6 +295,40 @@ internal object SuggestionTextDiff {
             }
         }
         return result
+    }
+
+    private fun forceSuffixEqual(
+        segments: List<SuggestionTextSegment>,
+        suffixLength: Int,
+    ): List<SuggestionTextSegment> {
+        if (suffixLength <= 0) return segments
+
+        val reversed = mutableListOf<SuggestionTextSegment>()
+        var remainingSuffix = suffixLength
+        for (segment in segments.asReversed()) {
+            when {
+                remainingSuffix <= 0 -> addSegment(reversed, segment.text.reversed(), segment.kind)
+                segment.text.length <= remainingSuffix -> {
+                    addSegment(reversed, segment.text.reversed(), SuggestionTextSegmentKind.EQUAL)
+                    remainingSuffix -= segment.text.length
+                }
+                else -> {
+                    val unchangedSuffix = segment.text.takeLast(remainingSuffix)
+                    val changedPrefix = segment.text.dropLast(remainingSuffix)
+                    addSegment(reversed, unchangedSuffix.reversed(), SuggestionTextSegmentKind.EQUAL)
+                    addSegment(reversed, changedPrefix.reversed(), segment.kind)
+                    remainingSuffix = 0
+                }
+            }
+        }
+
+        return reversed
+            .asReversed()
+            .map { it.copy(text = it.text.reversed()) }
+            .fold(mutableListOf()) { result, segment ->
+                addSegment(result, segment.text, segment.kind)
+                result
+            }
     }
 
     private fun sliceSegments(

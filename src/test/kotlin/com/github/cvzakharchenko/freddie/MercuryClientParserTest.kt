@@ -49,6 +49,26 @@ class MercuryClientParserTest {
     }
 
     @Test
+    fun `strips cursor tags from message content`() {
+        val completion =
+            MercuryClient.parseCompletion(
+                """
+                {
+                  "choices": [
+                    {
+                      "message": {
+                        "content": "return <|cursor|>value;\n"
+                      }
+                    }
+                  ]
+                }
+                """.trimIndent(),
+            )
+
+        assertEquals("return value;\n", completion.replacementText)
+    }
+
+    @Test
     fun `exact None means no suggestion`() {
         val completion =
             MercuryClient.parseCompletion(

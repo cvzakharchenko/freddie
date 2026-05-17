@@ -2,13 +2,7 @@ package com.github.cvzakharchenko.freddie.presentation
 
 import com.intellij.codeInsight.inline.completion.elements.InlineCompletionElement
 import com.intellij.codeInsight.inline.completion.elements.InlineCompletionTextElement
-import com.intellij.diff.util.DiffDrawUtil
-import com.intellij.diff.util.TextDiffType
-import com.intellij.openapi.diff.DiffColors
-import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
-import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.markup.RangeHighlighter
-import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.util.Disposer
 
 class LineGhostTextPresenter : SuggestionPresenter {
@@ -33,6 +27,9 @@ private class LineGhostTextPreview(
     private val presentables: List<InlineCompletionElement.Presentable>,
     private val deletedHighlighters: List<RangeHighlighter>,
 ) : PresentedSuggestion {
+    override val presentationDescription: String =
+        "Ghost text (${presentables.size} inline element(s), ${deletedHighlighters.size} deletion highlighter(s))"
+
     override fun dispose() {
         presentables.forEach { Disposer.dispose(it) }
         if (!suggestion.editor.isDisposed) {
@@ -51,7 +48,7 @@ private class LineGhostTextPreview(
                         replacement = suggestion.replacementText,
                         block = changedBlock,
                     )
-                deletedHighlighters.addAll(createDeletedHighlighters(suggestion, blockDiff.deletedRanges))
+                deletedHighlighters.addAll(SuggestionPreviewStyles.createDeletedHighlighters(suggestion, blockDiff.deletedRanges))
 
                 val displaySegments = SuggestionTextDiff.limitVisibleLines(blockDiff.replacementSegments)
                 val displayText = displaySegments.joinToString(separator = "") { it.text }
@@ -69,7 +66,7 @@ private class LineGhostTextPreview(
                     val presentable =
                         InlineCompletionTextElement(
                             segment.text,
-                            inlineSuggestionAttributes(suggestion.editor, segment.kind),
+                            SuggestionPreviewStyles.attributes(suggestion.editor, segment.kind),
                         ).toPresentable()
 
                     presentable.render(suggestion.editor, plan.renderOffset)
@@ -87,25 +84,6 @@ private class LineGhostTextPreview(
                 null
             }
         }
-
-        private fun createDeletedHighlighters(
-            suggestion: MercurySuggestion,
-            deletedRanges: List<SuggestionDeletedRange>,
-        ): List<RangeHighlighter> =
-            deletedRanges.flatMap { range ->
-                val startOffset = suggestion.startOffset + range.startOffsetInOriginal
-                val endOffset = suggestion.startOffset + range.endOffsetInOriginal
-                if (startOffset < endOffset && endOffset <= suggestion.document.textLength) {
-                    DiffDrawUtil.createInlineHighlighter(
-                        suggestion.editor,
-                        startOffset,
-                        endOffset,
-                        TextDiffType.DELETED,
-                    )
-                } else {
-                    emptyList()
-                }
-            }
 
         private fun segmentsWithPlanAffixes(
             plannedText: String,
@@ -143,30 +121,6 @@ private class LineGhostTextPreview(
                 segments.add(SuggestionTextSegment(text, kind))
             }
         }
-
-        private fun inlineSuggestionAttributes(
-            editor: Editor,
-            kind: SuggestionTextSegmentKind,
-        ): TextAttributes =
-            when (kind) {
-                SuggestionTextSegmentKind.EQUAL -> inlineSuggestionAttributes(editor)
-                SuggestionTextSegmentKind.INSERTED -> insertedSuggestionAttributes(editor)
-            }
-
-        private fun inlineSuggestionAttributes(editor: Editor): TextAttributes =
-            editor.colorsScheme
-                .getAttributes(DefaultLanguageHighlighterColors.INLINE_SUGGESTION)
-                .clone()
-
-        private fun insertedSuggestionAttributes(editor: Editor): TextAttributes {
-            val attributes = inlineSuggestionAttributes(editor)
-            val diffAttributes = editor.colorsScheme.getAttributes(DiffColors.DIFF_INSERTED)
-            attributes.backgroundColor = diffAttributes.backgroundColor ?: TextDiffType.INSERTED.getColor(editor)
-            attributes.effectColor = diffAttributes.effectColor
-            attributes.effectType = diffAttributes.effectType
-            attributes.setAdditionalEffects(diffAttributes.additionalEffects)
-            return attributes
-        }
     }
 }
 
@@ -186,45 +140,16 @@ internal data class LineGhostTextPlan(
             val limitedText = limitVisibleLines(displayText)
             if (limitedText.isBlank()) return null
 
-            val anchorOffset =
-                (editableStartOffset + changedBlock.anchorOffsetInOriginal)
-                    .coerceIn(0, documentText.length)
-            val changedOriginalLineCount = changedBlock.originalEndLineExclusive - changedBlock.originalStartLine
-            if (changedOriginalLineCount > 0) {
-                val firstChangedLine = lineNumberAt(documentText, anchorOffset)
-                val lastChangedLine =
-                    (firstChangedLine + changedOriginalLineCount - 1)
-                        .coerceAtMost(lastLineNumber(documentText))
-                return LineGhostTextPlan(
-                    renderOffset = lineEndOffset(documentText, lastChangedLine),
-                    text = "\n$limitedText",
+            val placement =
+                LineSuggestionPlacementPlanner.create(
+                    documentText = documentText,
+                    editableStartOffset = editableStartOffset,
+                    changedBlock = changedBlock,
                 )
-            }
-
-            val anchorLine = lineNumberAt(documentText, anchorOffset)
-            return if (anchorLine > 0) {
-                LineGhostTextPlan(
-                    renderOffset = lineEndOffset(documentText, anchorLine - 1),
-                    text = "\n$limitedText",
-                )
-            } else {
-                LineGhostTextPlan(
-                    renderOffset = anchorOffset,
-                    text = limitedText.ensureTrailingLineFeed(),
-                )
-            }
-        }
-
-        private fun lineNumberAt(
-            text: CharSequence,
-            offset: Int,
-        ): Int {
-            val safeOffset = offset.coerceIn(0, text.length)
-            var line = 0
-            for (index in 0 until safeOffset) {
-                if (text[index] == '\n') line++
-            }
-            return line
+            return LineGhostTextPlan(
+                renderOffset = placement.renderOffset,
+                text = if (placement.showAbove) limitedText.ensureTrailingLineFeed() else "\n$limitedText",
+            )
         }
 
         private fun limitVisibleLines(text: String): String {
@@ -238,35 +163,5 @@ internal data class LineGhostTextPlan(
 
         private fun String.ensureTrailingLineFeed(): String =
             if (endsWith('\n')) this else "$this\n"
-
-        private fun lineEndOffset(
-            text: CharSequence,
-            lineNumber: Int,
-        ): Int {
-            val startOffset = lineStartOffset(text, lineNumber)
-            var index = startOffset
-            while (index < text.length && text[index] != '\n') {
-                index++
-            }
-            return index
-        }
-
-        private fun lineStartOffset(
-            text: CharSequence,
-            lineNumber: Int,
-        ): Int {
-            if (lineNumber <= 0) return 0
-
-            var currentLine = 0
-            for (index in text.indices) {
-                if (text[index] == '\n') {
-                    currentLine++
-                    if (currentLine == lineNumber) return index + 1
-                }
-            }
-            return text.length
-        }
-
-        private fun lastLineNumber(text: CharSequence): Int = lineNumberAt(text, text.length)
     }
 }

@@ -18,6 +18,8 @@ data class MercurySuggestion(
 
 interface PresentedSuggestion : Disposable {
     val suggestion: MercurySuggestion
+    val presentationDescription: String
+        get() = "unknown presentation"
 }
 
 interface SuggestionPresenter : Disposable {

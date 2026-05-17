@@ -108,6 +108,8 @@ class MercuryClient(
                 text = text.removeSuffix("```")
             }
 
+            text = text.replace(CURSOR_TAG, "")
+
             if (text == "None") return null
             return text
         }
@@ -142,6 +144,8 @@ class MercuryClient(
             if (value.isJsonNull) return null
             return value.asString
         }
+
+        private const val CURSOR_TAG = "<|cursor|>"
     }
 }
 

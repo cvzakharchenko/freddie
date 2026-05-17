@@ -13,11 +13,12 @@ import com.github.cvzakharchenko.freddie.mercury.MercuryApiException
 import com.github.cvzakharchenko.freddie.mercury.MercuryClient
 import com.github.cvzakharchenko.freddie.mercury.MercuryCompletion
 import com.github.cvzakharchenko.freddie.presentation.ChangedBlock
-import com.github.cvzakharchenko.freddie.presentation.LineGhostTextPresenter
 import com.github.cvzakharchenko.freddie.presentation.MercurySuggestion
 import com.github.cvzakharchenko.freddie.presentation.PresentedSuggestion
+import com.github.cvzakharchenko.freddie.presentation.SettingsBackedSuggestionPresenter
 import com.github.cvzakharchenko.freddie.settings.FreddieSettings
 import com.github.cvzakharchenko.freddie.settings.MercuryApiKeyStore
+import com.github.cvzakharchenko.freddie.trigger.DismissPauseState
 import com.github.cvzakharchenko.freddie.trigger.MercuryTriggerPolicy
 import com.github.cvzakharchenko.freddie.trigger.TriggerKind
 import com.intellij.notification.NotificationGroupManager
@@ -83,8 +84,9 @@ class MercuryNextEditController(
     private val copiedSnippetTracker = project.service<CopiedSnippetTracker>()
     private val contextCollector = MercuryContextCollector(project, recentEditHistory, recentlyViewedSnippetTracker, copiedSnippetTracker)
     private val triggerPolicy = MercuryTriggerPolicy(project)
+    private val dismissPauseState = DismissPauseState()
     private val debugState = project.service<FreddieDebugStateService>()
-    private val presenter = LineGhostTextPresenter()
+    private val presenter = SettingsBackedSuggestionPresenter()
     private val mercuryClient = MercuryClient()
     private val typedRequestAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val requestSerial = AtomicLong()
@@ -139,6 +141,9 @@ class MercuryNextEditController(
         }
 
         typedRequestAlarm.cancelAllRequests()
+        if (triggerKind == TriggerKind.MANUAL && dismissPauseState.resume()) {
+            debugState.recordEditTriggerPause(false, "Manual request resumed edit-triggered suggestions")
+        }
 
         if (!FreddieSettings.getInstance().nextEditEnabled) {
             debugState.recordRequestSkipped(triggerKind, "next edit prediction is disabled")
@@ -287,7 +292,11 @@ class MercuryNextEditController(
         if (accepted.completed) {
             clearVisibleSuggestion()
             debugState.recordSuggestionResult(completedMessage, visibleSuggestion = false)
-            requestSuggestion(suggestion.editor, TriggerKind.ACCEPTED_SUGGESTION)
+            if (FreddieSettings.getInstance().chainedSuggestionsEnabled) {
+                requestSuggestion(suggestion.editor, TriggerKind.ACCEPTED_SUGGESTION)
+            } else {
+                debugState.recordEvent("Chained suggestions disabled; no follow-up request was made")
+            }
         } else {
             val updatedSuggestion =
                 suggestion.copy(
@@ -306,7 +315,11 @@ class MercuryNextEditController(
         val hadSuggestion = currentPresentedSuggestion != null
         invalidatePendingRequests()
         clearVisibleSuggestion()
-        debugState.recordSuggestionResult("Suggestion dismissed", visibleSuggestion = false)
+        if (hadSuggestion && dismissPauseState.pauseIfEnabled(FreddieSettings.getInstance().pauseOnDismiss)) {
+            debugState.recordEditTriggerPause(true, "Suggestion dismissed; edit-triggered suggestions paused until a manual request")
+        } else {
+            debugState.recordSuggestionResult("Suggestion dismissed", visibleSuggestion = false)
+        }
         return hadSuggestion
     }
 
@@ -400,8 +413,10 @@ class MercuryNextEditController(
 
         val editor = tracking.lastEditor?.takeUnless { it.isDisposed } ?: editorFor(event.document) ?: return
         tracking.lastEditor = editor
-        val decision = triggerPolicy.decisionAfterTypedEdit(editor, event)
-        debugState.recordTypedDecision(decision, FreddieSettings.getInstance().debounceMs)
+        val settings = FreddieSettings.getInstance()
+        val editTriggersPaused = dismissPauseState.isPaused(settings.pauseOnDismiss)
+        val decision = triggerPolicy.decisionAfterTypedEdit(editor, event, editTriggersPaused)
+        debugState.recordTypedDecision(decision, settings.debounceMs, editTriggersPaused)
         if (decision.shouldRequest) {
             scheduleTypedRequest(editor)
         }
@@ -504,12 +519,14 @@ class MercuryNextEditController(
             )
         currentPresentedSuggestion = presenter.show(suggestion)
         val visible = currentPresentedSuggestion != null
+        val presentation = currentPresentedSuggestion?.presentationDescription
         recordPreviewResult(
             message =
                 if (visible) {
-                    "${source.label} preview is visible"
+                    "${source.label} preview is visible: $presentation"
                 } else {
-                    "${source.label} was not rendered because the changed block was empty"
+                    "${source.label} was not rendered because the changed block was empty " +
+                        "(display mode: ${FreddieSettings.getInstance().suggestionDisplayMode})"
                 },
             visibleSuggestion = visible,
             source = source,
@@ -566,12 +583,13 @@ class MercuryNextEditController(
                 caretOffset = suggestion.editor.caretModel.offset,
             )
         currentPresentedSuggestion = presenter.show(advancedSuggestion)
+        val presentation = currentPresentedSuggestion?.presentationDescription
         debugState.recordSuggestionResult(
             message =
                 if (currentPresentedSuggestion == null) {
                     "Suggestion consumed by typing; no changed block remains"
                 } else {
-                    "Suggestion advanced by matching typed edit"
+                    "Suggestion advanced by matching typed edit: $presentation"
                 },
             visibleSuggestion = currentPresentedSuggestion != null,
         )

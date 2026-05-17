@@ -98,7 +98,11 @@ private class FreddieDebugPanel(
 
     private fun render(snapshot: FreddieDebugSnapshot) {
         statusLabel.text = "Status: ${snapshot.connectionStatus}"
-        settingsLabel.text = "Enabled: ${snapshot.enabled}    Debounce: ${snapshot.debounceMs}ms    API key: ${snapshot.apiKeySource}"
+        settingsLabel.text =
+            "Enabled: ${snapshot.enabled}    Trigger on edit: ${snapshot.triggerOnEdit}    " +
+                "Display: ${snapshot.suggestionDisplayMode}    " +
+                "Chain: ${snapshot.chainedSuggestions}    Pause on dismiss: ${formatPauseOnDismiss(snapshot)}    " +
+                "Debounce: ${snapshot.debounceMs}ms    API key: ${snapshot.apiKeySource}"
         triggerLabel.text = "Trigger: ${snapshot.lastTrigger}    Decision: ${snapshot.lastDecision}"
         suggestionLabel.text = "Suggestion visible: ${snapshot.visibleSuggestion}"
         eventLabel.text = "Last event: ${snapshot.lastEvent}    Updated: ${formatTime(snapshot.updatedAtMillis)}"
@@ -344,6 +348,13 @@ private class FreddieDebugPanel(
         Instant.ofEpochMilli(millis)
             .atZone(ZoneId.systemDefault())
             .format(TIME_FORMAT)
+
+    private fun formatPauseOnDismiss(snapshot: FreddieDebugSnapshot): String =
+        if (snapshot.pauseOnDismiss) {
+            if (snapshot.editTriggersPaused) "on, paused" else "on"
+        } else {
+            "off"
+        }
 
     companion object {
         private const val DEBUG_PREVIEW_DEBOUNCE_MS = 75

@@ -8,7 +8,7 @@ import org.junit.Test
 
 class SuggestionTextDiffTest {
     @Test
-    fun `leaves the common prefix of changed identifiers unhighlighted`() {
+    fun `leaves common prefix and suffix of changed identifiers unhighlighted`() {
         val original = "\t\tcase AuthStatus::ErrorKicked:\n"
         val replacement = "\t\tcase AuthStatus::ErrorUserBanned:\n"
         val block = requireNotNull(ChangedBlock.between(original, replacement))
@@ -18,14 +18,14 @@ class SuggestionTextDiffTest {
         assertEquals(
             listOf(
                 SuggestionTextSegmentKind.EQUAL to "\t\tcase AuthStatus::Error",
-                SuggestionTextSegmentKind.INSERTED to "UserBanned",
-                SuggestionTextSegmentKind.EQUAL to ":",
+                SuggestionTextSegmentKind.INSERTED to "UserBann",
+                SuggestionTextSegmentKind.EQUAL to "ed:",
             ),
             diff.replacementSegments.map { it.kind to it.text },
         )
         val deletedStart = original.indexOf("Kicked")
         assertEquals(
-            listOf(deletedStart to deletedStart + "Kicked".length),
+            listOf(deletedStart to deletedStart + "Kick".length),
             diff.deletedRanges.map { it.startOffsetInOriginal to it.endOffsetInOriginal },
         )
     }
@@ -42,6 +42,25 @@ class SuggestionTextDiffTest {
             listOf(
                 SuggestionTextSegmentKind.EQUAL to "return fun",
                 SuggestionTextSegmentKind.INSERTED to "ction",
+            ),
+            diff.replacementSegments.map { it.kind to it.text },
+        )
+        assertEquals(emptyList<Pair<Int, Int>>(), diff.deletedRanges.map { it.startOffsetInOriginal to it.endOffsetInOriginal })
+    }
+
+    @Test
+    fun `leaves shared prefix and suffix around a partially typed suggestion unhighlighted`() {
+        val original = "return fun;\n"
+        val replacement = "return function();\n"
+        val block = requireNotNull(ChangedBlock.between(original, replacement))
+
+        val diff = SuggestionTextDiff.between(original, replacement, block)
+
+        assertEquals(
+            listOf(
+                SuggestionTextSegmentKind.EQUAL to "return fun",
+                SuggestionTextSegmentKind.INSERTED to "ction()",
+                SuggestionTextSegmentKind.EQUAL to ";",
             ),
             diff.replacementSegments.map { it.kind to it.text },
         )

@@ -17,13 +17,18 @@ class MercuryTriggerPolicy(
     fun shouldRequestAfterTypedEdit(
         editor: Editor,
         event: DocumentEvent,
-    ): Boolean = decisionAfterTypedEdit(editor, event).shouldRequest
+        editTriggersPaused: Boolean = false,
+    ): Boolean = decisionAfterTypedEdit(editor, event, editTriggersPaused).shouldRequest
 
     fun decisionAfterTypedEdit(
         editor: Editor,
         event: DocumentEvent,
+        editTriggersPaused: Boolean = false,
     ): MercuryTriggerDecision {
-        if (!FreddieSettings.getInstance().nextEditEnabled) return skipped("next edit prediction is disabled")
+        val settings = FreddieSettings.getInstance()
+        if (!settings.nextEditEnabled) return skipped("next edit prediction is disabled")
+        if (!settings.triggerOnEdit) return skipped("trigger on edit is disabled")
+        if (editTriggersPaused) return skipped("trigger on edit is paused until a manual request")
         if (project.isDisposed) return skipped("project is disposed")
         if (editor.isDisposed) return skipped("editor is disposed")
         if (editor.project != project) return skipped("editor belongs to a different project")

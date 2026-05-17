@@ -19,6 +19,11 @@ import java.util.EventListener
 data class FreddieDebugSnapshot(
     val connectionStatus: String = "Idle",
     val enabled: Boolean = FreddieSettings.getInstance().nextEditEnabled,
+    val triggerOnEdit: Boolean = FreddieSettings.getInstance().triggerOnEdit,
+    val chainedSuggestions: Boolean = FreddieSettings.getInstance().chainedSuggestionsEnabled,
+    val pauseOnDismiss: Boolean = FreddieSettings.getInstance().pauseOnDismiss,
+    val suggestionDisplayMode: String = FreddieSettings.getInstance().suggestionDisplayMode.toString(),
+    val editTriggersPaused: Boolean = false,
     val debounceMs: Int = FreddieSettings.getInstance().debounceMs,
     val apiKeySource: String = MercuryApiKeyStore.describeApiKeySource(),
     val visibleSuggestion: Boolean = false,
@@ -69,9 +74,6 @@ class FreddieDebugStateService(
         update("Controller started") {
             it.copy(
                 connectionStatus = "Idle",
-                enabled = FreddieSettings.getInstance().nextEditEnabled,
-                debounceMs = FreddieSettings.getInstance().debounceMs,
-                apiKeySource = MercuryApiKeyStore.describeApiKeySource(),
             )
         }
     }
@@ -83,11 +85,13 @@ class FreddieDebugStateService(
     fun recordTypedDecision(
         decision: MercuryTriggerDecision,
         debounceMs: Int,
+        editTriggersPaused: Boolean = false,
     ) {
         update("Typed edit: ${decision.reason}") {
             it.copy(
                 connectionStatus = if (decision.shouldRequest) "Debouncing typed edit" else "Idle",
                 debounceMs = debounceMs,
+                editTriggersPaused = editTriggersPaused,
                 lastTrigger = TriggerKind.TYPED_EDIT.name,
                 lastDecision = if (decision.shouldRequest) "Will request after ${debounceMs}ms: ${decision.reason}" else "Skipped: ${decision.reason}",
             )
@@ -101,9 +105,6 @@ class FreddieDebugStateService(
         update("${triggerKind.name} request skipped: $reason") {
             it.copy(
                 connectionStatus = "Idle",
-                enabled = FreddieSettings.getInstance().nextEditEnabled,
-                debounceMs = FreddieSettings.getInstance().debounceMs,
-                apiKeySource = MercuryApiKeyStore.describeApiKeySource(),
                 lastTrigger = triggerKind.name,
                 lastDecision = "Skipped: $reason",
             )
@@ -119,9 +120,6 @@ class FreddieDebugStateService(
         update("${triggerKind.name} request #$requestNumber started") {
             it.copy(
                 connectionStatus = "Requesting Mercury",
-                enabled = FreddieSettings.getInstance().nextEditEnabled,
-                debounceMs = FreddieSettings.getInstance().debounceMs,
-                apiKeySource = MercuryApiKeyStore.describeApiKeySource(),
                 visibleSuggestion = visibleSuggestion,
                 lastTrigger = triggerKind.name,
                 lastDecision = "Request #$requestNumber sent to Mercury",
@@ -153,7 +151,7 @@ class FreddieDebugStateService(
             it.copy(
                 connectionStatus = "Mercury responded",
                 lastResponseSummary = summary,
-                lastResponseText = completion.rawText ?: completion.replacementText.orEmpty(),
+                lastResponseText = completion.replacementText ?: completion.rawText.orEmpty(),
                 lastRawResponseBody = completion.responseBody.orEmpty(),
                 responseRevision = it.responseRevision + 1,
                 lastError = "",
@@ -168,6 +166,20 @@ class FreddieDebugStateService(
                 updatedAtMillis = System.currentTimeMillis(),
             ),
         )
+    }
+
+    fun recordEditTriggerPause(
+        paused: Boolean,
+        message: String,
+    ) {
+        update(message) {
+            it.copy(
+                connectionStatus = "Idle",
+                visibleSuggestion = false,
+                editTriggersPaused = paused,
+                lastDecision = message,
+            )
+        }
     }
 
     fun recordSuggestionResult(
@@ -230,8 +242,21 @@ class FreddieDebugStateService(
     }
 
     private fun publish(nextSnapshot: FreddieDebugSnapshot) {
-        snapshot = nextSnapshot
-        dispatcher.multicaster.snapshotChanged(nextSnapshot)
+        snapshot = nextSnapshot.withCurrentSettings()
+        dispatcher.multicaster.snapshotChanged(snapshot)
+    }
+
+    private fun FreddieDebugSnapshot.withCurrentSettings(): FreddieDebugSnapshot {
+        val settings = FreddieSettings.getInstance()
+        return copy(
+            enabled = settings.nextEditEnabled,
+            triggerOnEdit = settings.triggerOnEdit,
+            chainedSuggestions = settings.chainedSuggestionsEnabled,
+            pauseOnDismiss = settings.pauseOnDismiss,
+            suggestionDisplayMode = settings.suggestionDisplayMode.toString(),
+            debounceMs = settings.debounceMs,
+            apiKeySource = MercuryApiKeyStore.describeApiKeySource(),
+        )
     }
 
     private fun FreddieDebugSnapshot.withEvent(event: String): FreddieDebugSnapshot {
