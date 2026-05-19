@@ -207,7 +207,7 @@ private class LineHintSeparatorRenderer(
             val width = lines.maxOfOrNull { measureLine(editor, it) } ?: 0
             if (width > 0) {
                 g.color = SuggestionPreviewStyles.lineHintInsertedColor(editor) ?: editor.colorsScheme.defaultForeground
-                g.fillRect(startX, y, width + RIGHT_PADDING, BAR_HEIGHT)
+                g.fillRect(startX, y, width, BAR_HEIGHT)
             }
         }
     }
@@ -266,6 +266,5 @@ private class LineHintSeparatorRenderer(
 
     companion object {
         private val BAR_HEIGHT = JBUI.scale(1)
-        private val RIGHT_PADDING = JBUI.scale(16)
     }
 }

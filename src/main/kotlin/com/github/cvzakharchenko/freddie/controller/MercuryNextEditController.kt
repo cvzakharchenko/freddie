@@ -215,9 +215,15 @@ class MercuryNextEditController(
 
     fun acceptCurrentSuggestion(): Boolean {
         return acceptSuggestionReplacement(
-            newTextProvider = { suggestion -> PartialAcceptResult(suggestion.replacementText, completed = true) },
+            newTextProvider = { suggestion ->
+                PartialSuggestionAcceptance.accept(
+                    currentText = suggestion.originalText,
+                    replacementText = suggestion.replacementText,
+                    kind = PartialAcceptKind.BLOCK,
+                )
+            },
             commandName = "Accept Mercury Next Edit",
-            acceptedMessage = "Suggestion accepted",
+            acceptedMessage = "Suggestion block accepted",
             completedMessage = "Suggestion accepted",
         )
     }
@@ -316,6 +322,7 @@ class MercuryNextEditController(
             val updatedSuggestion =
                 suggestion.copy(
                     modificationStamp = suggestion.document.modificationStamp,
+                    startOffset = resolvedRegion.startOffset,
                     endOffset = resolvedRegion.startOffset + accepted.text.length,
                     originalText = accepted.text,
                     caretOffset = suggestion.editor.caretModel.offset,

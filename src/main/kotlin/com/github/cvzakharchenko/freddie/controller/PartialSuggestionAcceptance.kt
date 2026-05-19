@@ -7,6 +7,7 @@ import com.github.cvzakharchenko.freddie.presentation.SuggestionTextTokenizer
 internal enum class PartialAcceptKind {
     WORD,
     LINE,
+    BLOCK,
 }
 
 internal data class PartialAcceptResult(
@@ -30,6 +31,7 @@ internal object PartialSuggestionAcceptance {
         val accepted = acceptedLines(kind, block, currentLines, replacementLines)
         val consumedOriginalLineCount =
             when {
+                kind == PartialAcceptKind.BLOCK -> block.originalEndLineExclusive - block.originalStartLine
                 block.originalStartLine >= block.originalEndLineExclusive -> 0
                 else -> 1
             }
@@ -64,6 +66,10 @@ internal object PartialSuggestionAcceptance {
     ): List<LineInfo> {
         if (block.replacementStartLine >= block.replacementEndLineExclusive) {
             return emptyList()
+        }
+
+        if (kind == PartialAcceptKind.BLOCK) {
+            return replacementLines.subList(block.replacementStartLine, block.replacementEndLineExclusive)
         }
 
         val replacementLine = replacementLines[block.replacementStartLine]

@@ -9,6 +9,75 @@ import org.junit.Test
 
 class PartialSuggestionAcceptanceTest {
     @Test
+    fun `block accept inserts the first contiguous changed block`() {
+        val result =
+            requireNotNull(
+                PartialSuggestionAcceptance.accept(
+                    currentText = "one\nfour\nseven\n",
+                    replacementText = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
+                    kind = PartialAcceptKind.BLOCK,
+                ),
+            )
+
+        assertEquals("one\ntwo\nthree\nfour\nseven\n", result.text)
+        assertFalse(result.completed)
+    }
+
+    @Test
+    fun `block accept moves to the next changed block after the first block was accepted`() {
+        val replacement = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n"
+        val firstResult =
+            requireNotNull(
+                PartialSuggestionAcceptance.accept(
+                    currentText = "one\nfour\nseven\n",
+                    replacementText = replacement,
+                    kind = PartialAcceptKind.BLOCK,
+                ),
+            )
+        val secondResult =
+            requireNotNull(
+                PartialSuggestionAcceptance.accept(
+                    currentText = firstResult.text,
+                    replacementText = replacement,
+                    kind = PartialAcceptKind.BLOCK,
+                ),
+            )
+
+        assertEquals(replacement, secondResult.text)
+        assertTrue(secondResult.completed)
+    }
+
+    @Test
+    fun `block accept replaces the first contiguous changed block`() {
+        val result =
+            requireNotNull(
+                PartialSuggestionAcceptance.accept(
+                    currentText = "one\nold two\nold three\nfour\nold six\nseven\n",
+                    replacementText = "one\nnew two\nnew three\nfour\nnew six\nseven\n",
+                    kind = PartialAcceptKind.BLOCK,
+                ),
+            )
+
+        assertEquals("one\nnew two\nnew three\nfour\nold six\nseven\n", result.text)
+        assertFalse(result.completed)
+    }
+
+    @Test
+    fun `block accept deletes the first contiguous changed block`() {
+        val result =
+            requireNotNull(
+                PartialSuggestionAcceptance.accept(
+                    currentText = "one\ndelete two\ndelete three\nfour\ndelete six\nseven\n",
+                    replacementText = "one\nfour\nseven\n",
+                    kind = PartialAcceptKind.BLOCK,
+                ),
+            )
+
+        assertEquals("one\nfour\ndelete six\nseven\n", result.text)
+        assertFalse(result.completed)
+    }
+
+    @Test
     fun `line accept inserts one suggested line`() {
         val result =
             requireNotNull(
