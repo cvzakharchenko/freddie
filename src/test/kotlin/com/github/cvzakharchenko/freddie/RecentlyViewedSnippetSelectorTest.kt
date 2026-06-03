@@ -2,6 +2,7 @@ package com.github.cvzakharchenko.freddie
 
 import com.github.cvzakharchenko.freddie.context.CodeSnippet
 import com.github.cvzakharchenko.freddie.context.RecentlyViewedSnippetSelector
+import com.github.cvzakharchenko.freddie.context.RecentlyViewedSnippetWindow
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -48,6 +49,20 @@ class RecentlyViewedSnippetSelectorTest {
         )
         assertEquals(3, selection.budget.keptItems)
         assertEquals(1, selection.budget.droppedItems)
+    }
+
+    @Test
+    fun `snippet window clamps stale center lines after a file shrinks`() {
+        val range = RecentlyViewedSnippetWindow.around(lineCount = 132, centerLine = 162, radiusLines = 20)
+
+        assertEquals(111..131, range)
+    }
+
+    @Test
+    fun `snippet window clamps negative center lines`() {
+        val range = RecentlyViewedSnippetWindow.around(lineCount = 10, centerLine = -50, radiusLines = 20)
+
+        assertEquals(0..9, range)
     }
 
     private fun snippet(

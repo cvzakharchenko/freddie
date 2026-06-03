@@ -1,6 +1,7 @@
 package com.github.cvzakharchenko.freddie.context
 
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.TextEditor
@@ -17,20 +18,33 @@ class RecentlyViewedSnippetTracker(
 ) {
     private data class ViewedLocation(
         val file: VirtualFile,
+        val document: Document,
         val line: Int,
         val timestamp: Long,
+        val documentModificationStamp: Long,
+        val fileModificationStamp: Long,
     )
 
     private val viewedLocations = ArrayDeque<ViewedLocation>()
 
     fun record(editor: Editor) {
         val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return
+        pruneStaleViewedLocations()
         val line = editor.caretModel.logicalPosition.line
         val previous = viewedLocations.lastOrNull()
         if (previous != null && previous.file == file && abs(previous.line - line) < LOCAL_MOVEMENT_LINES) {
             viewedLocations.removeLast()
         }
-        viewedLocations.addLast(ViewedLocation(file, line, System.currentTimeMillis()))
+        viewedLocations.addLast(
+            ViewedLocation(
+                file = file,
+                document = editor.document,
+                line = line,
+                timestamp = System.currentTimeMillis(),
+                documentModificationStamp = editor.document.modificationStamp,
+                fileModificationStamp = file.modificationStamp,
+            ),
+        )
         pruneViewedLocationsFor(file)
         while (viewedLocations.size > MAX_VIEWED_LOCATIONS) {
             viewedLocations.removeFirst()
@@ -45,6 +59,7 @@ class RecentlyViewedSnippetTracker(
     ): SnippetSelection {
         val snippets = mutableListOf<CodeSnippet>()
 
+        pruneStaleViewedLocations()
         viewedLocations
             .asReversed()
             .mapNotNull { snippetAround(it.file, it.line, it.timestamp) }
@@ -91,15 +106,13 @@ class RecentlyViewedSnippetTracker(
         val text = textFor(file) ?: return null
         if (text.isBlank()) return null
         val lines = text.split('\n')
-        if (lines.isEmpty()) return null
+        val lineRange = RecentlyViewedSnippetWindow.around(lines.size, centerLine, SNIPPET_RADIUS_LINES) ?: return null
 
-        val start = max(0, centerLine - SNIPPET_RADIUS_LINES)
-        val end = min(lines.lastIndex, centerLine + SNIPPET_RADIUS_LINES)
         return CodeSnippet(
             filePath = projectRelativePath(project, file),
-            startLine = start + 1,
-            endLine = end + 1,
-            text = lines.subList(start, end + 1).joinToString("\n"),
+            startLine = lineRange.first + 1,
+            endLine = lineRange.last + 1,
+            text = lines.subList(lineRange.first, lineRange.last + 1).joinToString("\n"),
             timestamp = timestamp,
         )
     }
@@ -121,6 +134,21 @@ class RecentlyViewedSnippetTracker(
                 newestToOldest.remove()
             }
         }
+    }
+
+    private fun pruneStaleViewedLocations() {
+        val iterator = viewedLocations.iterator()
+        while (iterator.hasNext()) {
+            if (!iterator.next().isCurrent()) {
+                iterator.remove()
+            }
+        }
+    }
+
+    private fun ViewedLocation.isCurrent(): Boolean {
+        if (file.isDirectory || !file.isValid) return false
+        return document.modificationStamp == documentModificationStamp &&
+            file.modificationStamp == fileModificationStamp
     }
 
     companion object {
@@ -180,6 +208,20 @@ internal object RecentlyViewedSnippetSelector {
     }
 
     private const val MAX_SNIPPETS = 8
+}
+
+internal object RecentlyViewedSnippetWindow {
+    fun around(
+        lineCount: Int,
+        centerLine: Int,
+        radiusLines: Int,
+    ): IntRange? {
+        if (lineCount <= 0) return null
+
+        val lastLine = lineCount - 1
+        val clampedCenterLine = centerLine.coerceIn(0, lastLine)
+        return max(0, clampedCenterLine - radiusLines)..min(lastLine, clampedCenterLine + radiusLines)
+    }
 }
 
 private const val MAX_SNIPPETS_PER_FILE = 2
