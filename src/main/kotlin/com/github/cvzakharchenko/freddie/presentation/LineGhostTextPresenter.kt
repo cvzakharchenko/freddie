@@ -39,6 +39,8 @@ private class LineGhostTextPreview(
 
     companion object {
         fun create(suggestion: MercurySuggestion): LineGhostTextPreview? {
+            if (suggestion.editor.isDisposed) return null
+
             val presentables = mutableListOf<InlineCompletionElement.Presentable>()
             val deletedHighlighters = mutableListOf<RangeHighlighter>()
             for (changedBlock in ChangedBlock.allBetween(suggestion.originalText, suggestion.replacementText)) {

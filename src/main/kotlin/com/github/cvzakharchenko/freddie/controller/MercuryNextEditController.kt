@@ -119,7 +119,13 @@ class MercuryNextEditController(
                 }
 
                 override fun editorReleased(event: EditorFactoryEvent) {
+                    clearVisibleSuggestionIfOwnedBy(event.editor)
                     editorDisposables.remove(event.editor)?.let { Disposer.dispose(it) }
+                    documentTrackings[event.editor.document]?.let { tracking ->
+                        if (tracking.lastEditor === event.editor) {
+                            tracking.lastEditor = null
+                        }
+                    }
                 }
             },
             this,
@@ -674,7 +680,7 @@ class MercuryNextEditController(
     }
 
     private fun repaintVisibleSuggestionForDisplayModeOverride(message: String) {
-        val suggestion = currentPresentedSuggestion?.suggestion ?: return
+        val suggestion = validCurrentSuggestionForRepaint() ?: return
         currentPresentedSuggestion = presenter.show(suggestion)
         val presentation = currentPresentedSuggestion?.presentationDescription
         debugState.recordSuggestionResult(
@@ -686,6 +692,26 @@ class MercuryNextEditController(
                 },
             visibleSuggestion = currentPresentedSuggestion != null,
         )
+    }
+
+    private fun validCurrentSuggestionForRepaint(): MercurySuggestion? {
+        val suggestion = currentPresentedSuggestion?.suggestion ?: return null
+        val invalidReason =
+            when {
+                suggestion.editor.isDisposed -> "editor was disposed"
+                project.isDisposed -> "project was disposed"
+                suggestion.editor.project != project -> "editor no longer belongs to this project"
+                else -> null
+            }
+        if (invalidReason != null) {
+            clearVisibleSuggestion()
+            debugState.recordSuggestionResult(
+                "Suggestion preview cleared before repaint: $invalidReason",
+                visibleSuggestion = false,
+            )
+            return null
+        }
+        return suggestion
     }
 
     private fun recordUserEdit(
@@ -825,6 +851,12 @@ class MercuryNextEditController(
     private fun clearVisibleSuggestion() {
         currentPresentedSuggestion = null
         presenter.dispose()
+    }
+
+    private fun clearVisibleSuggestionIfOwnedBy(editor: Editor) {
+        if (currentPresentedSuggestion?.suggestion?.editor !== editor) return
+        clearVisibleSuggestion()
+        debugState.recordSuggestionResult("Suggestion preview cleared because its editor was released", visibleSuggestion = false)
     }
 
     private fun notifyUser(

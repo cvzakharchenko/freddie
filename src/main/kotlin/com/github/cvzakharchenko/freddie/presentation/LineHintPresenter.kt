@@ -46,6 +46,8 @@ private class LineHintPreview(
 
     companion object {
         fun create(suggestion: MercurySuggestion): LineHintPreview? {
+            if (suggestion.editor.isDisposed) return null
+
             val lineHighlighters = mutableListOf<RangeHighlighter>()
             val deletedHighlighters = mutableListOf<RangeHighlighter>()
             for (changedBlock in ChangedBlock.allBetween(suggestion.originalText, suggestion.replacementText)) {
