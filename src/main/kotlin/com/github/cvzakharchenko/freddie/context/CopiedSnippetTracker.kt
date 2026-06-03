@@ -132,6 +132,6 @@ class FreddieCopyPastePreProcessor : CopyPastePreProcessor {
         file: PsiFile,
         editor: Editor,
         text: String,
-        rawText: RawText,
+        rawText: RawText?,
     ): String = text
 }
